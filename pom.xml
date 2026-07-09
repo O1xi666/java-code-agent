@@ -12,7 +12,7 @@
     <artifactId>java-code-agent</artifactId>
     <version>0.0.1-SNAPSHOT</version>
     <name>java-code-agent</name>
-    <description>Java代码智能Agent（RAG增强版）</description>
+    <description>Java浠ｇ爜鏅鸿兘Agent锛圧AG澧炲己鐗堬級</description>
 
     <properties>
         <java.version>21</java.version>
@@ -20,7 +20,7 @@
     </properties>
 
     <dependencies>
-        <!-- 1. Spring Boot 基础（必须） -->
+        <!-- 1. Spring Boot 鍩虹锛堝繀椤伙級 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
@@ -30,14 +30,14 @@
             <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>
 
-        <!-- 2. LangChain4j 核心（必须） -->
+        <!-- 2. LangChain4j 鏍稿績锛堝繀椤伙級 -->
         <dependency>
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j</artifactId>
             <version>${langchain4j.version}</version>
         </dependency>
 
-        <!-- ✅ 3. Ollama 依赖（你真正需要的！修复RagConfig报红） -->
+        <!-- 鉁?3. Ollama 渚濊禆锛堜綘鐪熸闇€瑕佺殑锛佷慨澶峈agConfig鎶ョ孩锛?-->
         <dependency>
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j-ollama</artifactId>
@@ -50,39 +50,31 @@
             <version>${langchain4j.version}</version>
         </dependency>
 
-        <!-- 4. 测试依赖（必须） -->
+        <!-- 4. 娴嬭瘯渚濊禆锛堝繀椤伙級 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
-        <!-- ✅ 5. Redis 依赖（用于持久化会话记忆） -->
+        <!-- 鉁?5. Redis 渚濊禆锛堢敤浜庢寔涔呭寲浼氳瘽璁板繂锛?-->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
-        <!-- ✅ 6. Lettuce 连接池支持（Redis 客户端） -->
+        <!-- 鉁?6. Lettuce 杩炴帴姹犳敮鎸侊紙Redis 瀹㈡埛绔級 -->
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-pool2</artifactId>
         </dependency>
 
-        <!-- 7. Milvus 向量数据库 -->
-        <dependency>
-            <groupId>io.milvus</groupId>
-            <artifactId>milvus-sdk-java</artifactId>
-            <version>2.4.0</version>
-        </dependency>
-
-        <!-- 8. Token 切分工具 -->
         <dependency>
             <groupId>com.knuddels</groupId>
             <artifactId>jtokkit</artifactId>
             <version>1.1.0</version>
         </dependency>
 
-        <!-- 9. BM25 检索（Lucene） -->
+        <!-- 9. BM25 妫€绱紙Lucene锛?-->
         <dependency>
             <groupId>org.apache.lucene</groupId>
             <artifactId>lucene-core</artifactId>
@@ -94,7 +86,7 @@
             <version>9.8.0</version>
         </dependency>
 
-        <!-- 10. 文档解析与清洗 -->
+        <!-- 10. 鏂囨。瑙ｆ瀽涓庢竻娲?-->
         <dependency>
             <groupId>org.apache.poi</groupId>
             <artifactId>poi</artifactId>
@@ -105,9 +97,21 @@
             <artifactId>jsoup</artifactId>
             <version>1.17.2</version>
         </dependency>
+        <!-- JavaParser 浠ｇ爜瑙ｆ瀽鏍稿績渚濊禆锛堣В鍐冲綋鍓嶇紪璇戞姤閿欙級 -->
+        <dependency>
+            <groupId>com.github.javaparser</groupId>
+            <artifactId>javaparser-core</artifactId>
+            <version>3.25.8</version>
+        </dependency>
 
 
-    </dependencies>
+            <!-- 11. PDF 文档解析 -->
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>3.0.1</version>
+        </dependency>
+        </dependencies>
 
     <build>
         <plugins>
@@ -118,3 +122,4 @@
         </plugins>
     </build>
 </project>
+

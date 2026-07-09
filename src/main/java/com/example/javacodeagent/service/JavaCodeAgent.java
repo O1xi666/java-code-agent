@@ -106,14 +106,12 @@ public class JavaCodeAgent {
         // 2. 构建 Agent
         AutoJavaAgent agent = AiServices.builder(AutoJavaAgent.class)
                 .chatLanguageModel(chatLanguageModel)
-                .chatMemory(chatMemory) // 这里必须传入，但LangChain4j流式+工具目前有点小Bug
+                .chatMemory(chatMemory)
                 .contentRetriever(contentRetriever)
-               // .tools(javaCodeTool, performanceTool, testTool)
+                .tools(javaCodeTool, performanceTool, testTool)
                 .build();
 
-        // 3. 调用流式接口
-        // 注意：如果你只是为了测试流式，先尝试把 .tools(...) 注释掉看看
-        // 如果注释掉工具就不报错了，说明就是 LangChain4j 的流式+工具的兼容性问题
+
         return agent.executeTaskStream(userInput);
     }
 }

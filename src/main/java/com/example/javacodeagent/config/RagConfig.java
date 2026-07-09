@@ -6,21 +6,30 @@ import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.ollama.OllamaChatModel;
 import dev.langchain4j.model.ollama.OllamaEmbeddingModel;
 import dev.langchain4j.model.output.Response;
+import dev.langchain4j.rag.content.Content;
 import dev.langchain4j.rag.content.retriever.ContentRetriever;
-import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
-import dev.langchain4j.store.embedding.EmbeddingMatch;
-import dev.langchain4j.store.embedding.EmbeddingStore;
 import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
+import com.example.javacodeagent.rag.service.HybridSearchService;
+import com.example.javacodeagent.rag.util.BM25Searcher;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 @Configuration
 public class RagConfig {
 
-    // 1. 聊天对话模型
+    private static final Logger log = LoggerFactory.getLogger(RagConfig.class);
+
+    private static final String VECTOR_STORE_FILE = "rag-vector-index/vector-store.json";
+
     @Bean
     public OllamaChatModel ollamaChatModel() {
         return OllamaChatModel.builder()
@@ -30,7 +39,6 @@ public class RagConfig {
                 .build();
     }
 
-    // 2. 向量嵌入模型
     @Bean
     public EmbeddingModel embeddingModel() {
         return OllamaEmbeddingModel.builder()
@@ -39,62 +47,62 @@ public class RagConfig {
                 .build();
     }
 
-    // 3. 内存向量库
     @Bean
-    public EmbeddingStore<TextSegment> embeddingStore() {
+    public BM25Searcher bm25Searcher() {
+        return new BM25Searcher(Path.of("rag-bm25-index"));
+    }
+
+    @Bean
+    public InMemoryEmbeddingStore<TextSegment> embeddingStore() {
+        Path storePath = Path.of(VECTOR_STORE_FILE);
+        if (Files.exists(storePath)) {
+            try {
+                String json = Files.readString(storePath);
+                return InMemoryEmbeddingStore.fromJson(json);
+            } catch (IOException e) {
+                log.warn("Failed loading vector store: {}", e.getMessage());
+            }
+        }
         return new InMemoryEmbeddingStore<>();
     }
 
-    // 4. 修复版 RAG 检索器：增加调试日志和空值防御
     @Bean
-    public ContentRetriever contentRetriever(EmbeddingModel embeddingModel, EmbeddingStore<TextSegment> store) {
-        // --- 第一步：准备数据 ---
-        List<String> rawKnowledge = List.of(
-                "1. 空指针处理：调用对象方法前必须做非空判断，优先使用if (obj != null)",
-                "2. Optional使用：简单场景禁止滥用Optional，禁止直接调用Optional.get()",
-                "3. 代码规范：public类必须与文件名一致，类和方法使用驼峰命名",
-                "4. 性能规范：循环内禁止创建对象、禁止用+拼接字符串"
-        );
+    public ContentRetriever contentRetriever(
+            EmbeddingModel embeddingModel,
+            HybridSearchService hybridSearchService) {
+        return query -> {
+            String queryText = query == null ? "" : Objects.toString(query.text(), "").trim();
+            if (queryText.isBlank()) return List.of();
 
-        List<TextSegment> segments = new ArrayList<>();
-        for (String text : rawKnowledge) {
-            // 强制去除首尾空格，防止空白字符导致问题
-            String cleanText = text.trim();
-            if (!cleanText.isEmpty()) {
-                segments.add(TextSegment.from(cleanText));
-            }
-        }
-
-        // --- 第二步：向量化并存入（带调试日志） ---
-        System.out.println(">>> 正在初始化 RAG 知识库...");
-        try {
-            // 调用 embedAll，这会去请求 Ollama
-            Response<List<Embedding>> embeddingResponse = embeddingModel.embedAll(segments);
-            List<Embedding> embeddings = embeddingResponse.content();
-
-            // 检查 Ollama 是否返回了空向量
-            if (embeddings == null || embeddings.isEmpty()) {
-                throw new RuntimeException("Ollama 嵌入模型返回了空结果！请检查 Ollama 服务是否正常。");
+            Response<Embedding> embeddingResponse = embeddingModel.embed(queryText);
+            Embedding embedding = embeddingResponse == null ? null : embeddingResponse.content();
+            if (embedding == null || embedding.vectorAsList() == null || embedding.vectorAsList().isEmpty()) {
+                return List.of();
             }
 
-            // 存入内存库
-            for (int i = 0; i < segments.size(); i++) {
-                store.add(embeddings.get(i), segments.get(i));
-            }
-            System.out.println(">>> RAG 知识库初始化成功，共入库 " + segments.size() + " 条数据。");
-        } catch (Exception e) {
-            System.err.println(">>> RAG 初始化失败: " + e.getMessage());
-            e.printStackTrace();
-            // 如果初始化失败，为了防止后续报错，我们可以选择不抛出异常，而是留空，
-            // 或者在这里直接阻断启动。这里选择打印错误继续运行。
-        }
+            List<HybridSearchService.HybridSearchResult> hits = hybridSearchService.search(
+                    queryText, embedding.vectorAsList());
+            if (hits == null || hits.isEmpty()) return List.of();
 
-        // --- 第三步：构建检索器 ---
-        return EmbeddingStoreContentRetriever.builder()
-                .embeddingStore(store)
-                .embeddingModel(embeddingModel)
-                .maxResults(2)
-                .minScore(0.0) // 设置为0，确保哪怕相关性低也能检索出来（调试用）
-                .build();
+            List<Content> contents = new ArrayList<>(hits.size());
+            for (int i = 0; i < hits.size(); i++) {
+                HybridSearchService.HybridSearchResult hit = hits.get(i);
+                String refId = "REF-" + (i + 1);
+                dev.langchain4j.data.document.Metadata metadata = new dev.langchain4j.data.document.Metadata()
+                        .put("ref_id", refId)
+                        .put("chunk_id", safe(hit.chunkId()))
+                        .put("source", safe(hit.source()))
+                        .put("token_count", hit.tokenCount())
+                        .put("final_score", hit.finalScore());
+                String text = "[%s]%nchunk_id: %s%nsource: %s%ntext: %s"
+                        .formatted(refId, safe(hit.chunkId()), safe(hit.source()), safe(hit.content()));
+                contents.add(Content.from(TextSegment.from(text, metadata)));
+            }
+            return contents;
+        };
+    }
+
+    private static String safe(String value) {
+        return value == null ? "" : value;
     }
 }

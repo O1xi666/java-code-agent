@@ -1,18 +1,12 @@
-server:
+﻿server:
   port: 8080
 
-langchain4j:
-  ollama:
-    base-url: http://localhost:11434
-    chat-model:
-      model-name: llama3:8b
-      temperature: 0.1
 spring:
   data:
     redis:
-      host: localhost  # 你的Redis地址，本地默认localhost
-      port: 6379       # Redis默认端口
-      database: 0      # 使用0号数据库
-      timeout: 10s    # 连接超时时间
+      host: localhost
+      port: 6379
+      database: 7
+      timeout: 10s
   jmx:
-    enabled: false  # 禁用JMX，解决Redis重复注册冲突
+    enabled: false
