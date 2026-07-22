@@ -65,7 +65,7 @@ Stock Analysis Agent
 
 ---
 
-## 技术亮点（面试关注点）
+## 技术亮点
 
 ### 1. 从 Milvus 迁移到 InMemoryEmbeddingStore（Phase 2）
 - 删除了 MilvusConfig 和 MilvusVectorService
@@ -73,9 +73,6 @@ Stock Analysis Agent
 - 零外部依赖，启动即用
 - 支持 toJson/fromJson 持久化
 
-**面试题**：为什么不用 Milvus？
-- 本地场景（几十到几百份研报）内存绰绰有余
-- 引入 Milvus 需要额外部署和维护，增加复杂度
 
 ### 2. 四维分析框架（Phase 3）
 - 基本面（35%）+ 技术面（25%）+ 消息面（25%）+ 行业比较（15%）
@@ -230,8 +227,6 @@ curl -X POST http://localhost:8080/api/stock/analyze \
 
 ---
 
-## 许可证
 
-MIT License
 
-**最后更新时间：2024-07-07**
+

@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stock Analysis Agent</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f0f2f5; height: 100vh; display: flex; justify-content: center; }
+.app { width: 100%; max-width: 760px; display: flex; flex-direction: column; height: 100vh; background: white; box-shadow: 0 0 20px rgba(0,0,0,0.05); }
+.header { padding: 14px 20px; background: #1a1a2e; color: white; }
+.header h1 { font-size: 18px; font-weight: 600; }
+.header p { font-size: 12px; color: #8892b0; margin-top: 2px; }
+
+/* Tab 导航 */
+.tab-bar { display: flex; background: #f8f9fa; border-bottom: 1px solid #e0e0e0; }
+.tab-bar button { flex: 1; padding: 10px; border: none; background: transparent; cursor: pointer; font-size: 14px; color: #666; border-bottom: 2px solid transparent; }
+.tab-bar button:hover { background: #eee; }
+.tab-bar button.active { color: #1a1a2e; border-bottom: 2px solid #1a1a2e; font-weight: 600; background: white; }
+
+/* Tab 内容 */
+.tab-content { display: none; flex-direction: column; flex: 1; overflow: hidden; }
+.tab-content.active { display: flex; }
+
+/* Tab1: 聊天 */
+.chat { flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
+.msg { padding: 10px 14px; border-radius: 8px; max-width: 85%; line-height: 1.6; font-size: 14px; white-space: pre-wrap; word-break: break-word; }
+.msg.user { background: #e8f4fe; align-self: flex-end; color: #1a1a2e; }
+.msg.agent { background: #f5f5f5; align-self: flex-start; color: #333; }
+.msg.system { background: #fff3cd; align-self: center; font-size: 13px; color: #856404; border: 1px solid #ffeeba; }
+.msg .label { font-size: 11px; color: #999; margin-bottom: 4px; }
+.msg.loading { background: transparent; align-self: flex-start; color: #999; font-style: italic; }
+.input-area { padding: 12px 20px; border-top: 1px solid #eee; display: flex; gap: 8px; background: white; }
+.input-area textarea { flex: 1; padding: 10px 14px; border: 1px solid #d0d5dd; border-radius: 8px; resize: none; font-size: 14px; font-family: inherit; outline: none; min-height: 42px; max-height: 120px; }
+.input-area textarea:focus { border-color: #1a1a2e; }
+.input-area button { padding: 10px 24px; background: #1a1a2e; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500; }
+.input-area button:hover { background: #2d2d5e; }
+.input-area button:disabled { background: #999; cursor: not-allowed; }
+.toolbar { padding: 8px 20px; border-bottom: 1px solid #f0f0f0; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.toolbar button { padding: 5px 12px; border: 1px solid #d0d5dd; border-radius: 6px; background: white; cursor: pointer; font-size: 12px; color: #333; }
+.toolbar button:hover { background: #f5f5f5; }
+.toolbar .primary { background: #1a1a2e; color: white; border-color: #1a1a2e; }
+.toolbar .primary:hover { background: #2d2d5e; }
+.toolbar .session { margin-left: auto; display: flex; align-items: center; gap: 4px; font-size: 12px; color: #666; }
+.toolbar .session input { width: 120px; padding: 3px 6px; border: 1px solid #d0d5dd; border-radius: 4px; font-size: 12px; }
+.quick-stocks { padding: 6px 20px; border-top: 1px solid #f0f0f0; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.quick-stocks span { font-size: 12px; color: #999; }
+.quick-stocks button { padding: 3px 10px; border: 1px solid #e0e0e0; border-radius: 12px; background: white; cursor: pointer; font-size: 12px; color: #555; }
+.quick-stocks button:hover { background: #f0f0f0; border-color: #1a1a2e; color: #1a1a2e; }
+
+/* Tab2: 知识管理 */
+.knowledge-panel { padding: 16px 20px; overflow-y: auto; flex: 1; }
+.knowledge-panel .section { margin-bottom: 20px; }
+.knowledge-panel .section h3 { font-size: 14px; color: #333; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid #eee; }
+.knowledge-panel .card { background: #f9f9f9; border-radius: 8px; padding: 14px; border: 1px solid #eee; margin-bottom: 12px; }
+.knowledge-panel textarea { width: 100%; padding: 8px 10px; border: 1px solid #d0d5dd; border-radius: 6px; font-size: 13px; resize: vertical; min-height: 60px; font-family: inherit; }
+.knowledge-panel input[type="text"] { width: 100%; padding: 8px 10px; border: 1px solid #d0d5dd; border-radius: 6px; font-size: 13px; }
+.knowledge-panel .btn-row { margin-top: 8px; display: flex; gap: 6px; }
+.knowledge-panel .btn { padding: 6px 16px; border: 1px solid #d0d5dd; border-radius: 6px; background: white; cursor: pointer; font-size: 13px; }
+.knowledge-panel .btn:hover { background: #f0f0f0; }
+.knowledge-panel .btn-primary { background: #1a1a2e; color: white; border-color: #1a1a2e; }
+.knowledge-panel .btn-primary:hover { background: #2d2d5e; }
+.knowledge-panel .rule-item { padding: 8px 10px; background: white; border: 1px solid #eee; border-radius: 6px; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.knowledge-panel .rule-item .text { flex: 1; font-size: 13px; color: #333; line-height: 1.5; white-space: pre-wrap; }
+.knowledge-panel .rule-item .meta { font-size: 11px; color: #999; margin-top: 2px; }
+.knowledge-panel .rule-item .del { color: #e74c3c; cursor: pointer; padding: 2px 6px; border: none; background: none; font-size: 14px; }
+.knowledge-panel .csv-hint { font-size: 12px; color: #888; margin-top: 4px; }
+.knowledge-panel .result-box { margin-top: 8px; padding: 8px; background: #e8f5e9; border-radius: 6px; font-size: 13px; display: none; }
+
+
+/* 监控面板 */
+.monitor-panel { padding: 16px 20px; overflow-y: auto; flex: 1; }
+.monitor-panel .section { margin-bottom: 20px; }
+.monitor-panel .section h3 { font-size: 14px; color: #333; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid #eee; }
+.monitor-header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:16px; padding-bottom:12px; border-bottom:2px solid #1a1a2e; }
+.monitor-header h3 { font-size:16px; color:#1a1a2e; margin:0; padding:0; border:none; }
+.monitor-panel .btn { padding: 6px 16px; border: 1px solid #d0d5dd; border-radius: 6px; background: white; cursor: pointer; font-size: 13px; }
+.monitor-panel .btn:hover { background: #f0f0f0; }
+.alert-item { padding:10px 14px; border-radius:8px; margin-bottom:8px; border-left:4px solid #e74c3c; background:#fff5f5; }
+.alert-item .alert-title { font-size:14px; font-weight:600; color:#c0392b; }
+.alert-item .alert-msg { font-size:13px; color:#555; margin-top:4px; }
+.alert-item .alert-time { font-size:11px; color:#999; margin-top:2px; }
+.monitor-stock-item { padding:10px; border:1px solid #eee; border-radius:8px; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center; }
+.monitor-stock-item .ms-name { font-size:14px; font-weight:600; color:#333; }
+/* Tab3: 自选股 */
+.watchlist-panel { padding: 16px 20px; overflow-y: auto; flex: 1; }
+.watchlist-panel .section { margin-bottom: 20px; }
+.watchlist-panel .section h3 { font-size: 14px; color: #333; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid #eee; }
+.watchlist-panel .card { background: #f9f9f9; border-radius: 8px; padding: 14px; border: 1px solid #eee; }
+.watchlist-panel .form-row { display: flex; gap: 8px; margin-bottom: 8px; }
+.watchlist-panel .form-row input { flex: 1; padding: 8px 10px; border: 1px solid #d0d5dd; border-radius: 6px; font-size: 13px; }
+.watchlist-panel .btn { padding: 6px 16px; border: 1px solid #d0d5dd; border-radius: 6px; background: white; cursor: pointer; font-size: 13px; }
+.watchlist-panel .btn:hover { background: #f0f0f0; }
+.watchlist-panel .btn-primary { background: #1a1a2e; color: white; border-color: #1a1a2e; }
+.watchlist-panel .btn-primary:hover { background: #2d2d5e; }
+.watchlist-panel .btn-danger { background: #e74c3c; color: white; border-color: #e74c3c; }
+.watchlist-panel .btn-danger:hover { background: #c0392b; }
+.watchlist-panel table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.watchlist-panel th { background: #f8f9fa; padding: 8px; text-align: left; border-bottom: 2px solid #eee; font-weight: 600; color: #555; }
+.watchlist-panel td { padding: 8px; border-bottom: 1px solid #f0f0f0; }
+.watchlist-panel td .op-btn { padding: 2px 8px; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; font-size: 12px; background: white; margin-right: 4px; }
+.watchlist-panel td .op-btn:hover { background: #f0f0f0; }
+.watchlist-panel td .op-btn.del { color: #e74c3c; border-color: #e74c3c; }
+.empty-state { color: #999; font-size: 13px; padding: 20px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- 头部 -->
+  <div class="header">
+    <h1>Stock Analysis Agent</h1>
+    <p>AI 多维分析 | 实时行情 | 技术指标 | 知识库 | 自选股</p>
+  </div>
+
+  <!-- Tab 导航 -->
+  <div class="tab-bar">
+    <button id="tab1-btn" class="active" onclick="switchTab(1)">📈 股票分析</button>
+    <button id="tab2-btn" onclick="switchTab(2)">📚 知识管理</button>
+    <button id="tab3-btn" onclick="switchTab(3)">⭐ 自选股</button>
+  </div>
+
+  <!-- Tab 1: 股票分析 -->
+  <div id="tab1-content" class="tab-content active">
+    <div class="toolbar">
+      <button class="primary" onclick="analyzeCurrent()">分析当前</button>
+      <button onclick="sendDailyReport()">📊 日报</button>
+      <button onclick="clearChat()">🗑 清空对话</button>
+      <div class="session">
+        <span>会话:</span>
+        <input id="sessionInput" value="default-session" onchange="saveSession()">
+        <button onclick="newSession()" style="padding:2px 8px;font-size:11px;">新建</button>
+      </div>
+    </div>
+    <div class="chat" id="chatBox">
+      <div class="msg system">输入股票名称开始分析，例如 "分析一下贵州茅台"</div>
+    </div>
+    <div class="quick-stocks" id="watchlistQuickBar">
+      <span>常用:</span>
+      <button onclick="quickAnalyze('贵州茅台')">🍶 茅台</button>
+      <button onclick="quickAnalyze('宁德时代')">🔋 宁德时代</button>
+      <button onclick="quickAnalyze('比亚迪')">🚗 比亚迪</button>
+      <button onclick="quickAnalyze('中国平安')">🛡 平安</button>
+      <button onclick="quickAnalyze('招商银行')">🏦 招商</button>
+      <span style="margin-left:8px;" id="wlQuickHint"></span>
+    </div>
+    <div class="input-area">
+      <textarea id="inputBox" rows="1" placeholder="输入问题，如：分析一下贵州茅台，当前趋势如何？" onkeydown="handleKey(event)"></textarea>
+      <button id="sendBtn" onclick="sendMessage()">发送</button>
+    </div>
+  </div>
+
+  <!-- Tab 2: 知识管理 -->
+  <div id="tab2-content" class="tab-content">
+    <div class="knowledge-panel">
+      <!-- 通用规则 -->
+      <div class="section">
+        <h3>📜 通用规则</h3>
+        <p style="font-size:12px;color:#888;margin-bottom:8px;">通用规则在每次股票分析时自动附加，用于约束分析逻辑。</p>
+        <div class="card">
+          <textarea id="ruleInput" placeholder="输入通用规则内容，例如：财报中 f43 是股价不是营收，Selenium 才是正路"></textarea>
+          <div class="btn-row">
+            <input type="text" id="ruleSource" placeholder="来源（可选）" style="flex:1;padding:6px 10px;border:1px solid #d0d5dd;border-radius:6px;font-size:13px;">
+            <button class="btn btn-primary" onclick="addGeneralRule()">添加规则</button>
+          </div>
+        </div>
+        <div id="ruleList">
+          <div class="empty-state" style="padding:10px;">暂无通用规则，请添加</div>
+        </div>
+      </div>
+      <!-- CSV 导入 -->
+      <div class="section">
+        <h3>📄 导入专有知识</h3>
+        <div class="card">
+          <input type="file" id="csvFile" accept=".csv" style="margin-bottom:8px;">
+          <div class="csv-hint">CSV 格式: stock_code,stock_name,category,content,tags,source</div>
+          <div class="btn-row">
+            <button class="btn btn-primary" onclick="importCsv()">上传并索引</button>
+          </div>
+          <div id="csvResult" class="result-box"></div>
+        </div>
+      </div>
+      <!-- 知识库统计 -->
+      <div class="section">
+        <h3>📊 知识库统计</h3>
+        <div class="card" style="display:flex;gap:20px;align-items:center;">
+          <div><span style="font-size:24px;font-weight:700;color:#1a1a2e;" id="kbEntryCount">-</span><br><span style="font-size:12px;color:#888;">条目数</span></div>
+          <div><span style="font-size:24px;font-weight:700;color:#1a1a2e;" id="kbStockCount">-</span><br><span style="font-size:12px;color:#888;">覆盖股票</span></div>
+          <div style="margin-left:auto;">
+            <button class="btn" onclick="refreshKbStats()">🔄 刷新</button>
+            <button class="btn" onclick="if(confirm('确认清空所有知识？'))clearKb()" style="color:#e74c3c;">🗑 清空</button>
+            <button class="btn" onclick="rebuildKb()">🔨 重建索引</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab 3: 自选股 -->
+  <div id="tab3-content" class="tab-content">
+    <div class="watchlist-panel">
+      <div class="section">
+        <h3>➕ 添加自选股</h3>
+        <div class="card">
+          <div class="form-row">
+            <input type="text" id="wlCode" placeholder="股票代码 (如 1.600519)">
+            <input type="text" id="wlName" placeholder="股票名称 (如 贵州茅台)">
+            <input type="text" id="wlNote" placeholder="备注（可选）">
+            <button class="btn btn-primary" onclick="addWatchlist()">添加</button>
+          </div>
+        </div>
+      </div>
+      <div class="section">
+        <h3>📋 我的自选股</h3>
+        <div id="wlTableWrap">
+          <div class="empty-state">加载中...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- Tab 4 -->
+  <div id="tab4-content" class="tab-content">
+    <div class="monitor-panel">
+      <div class="monitor-header">
+        <div>
+          <h3>📝 自选股监控</h3>
+          <p style="font-size:12px;color:#888;margin-top:2px;">每30分钟轮询一次，异常时自动推送预警</p>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <span id="monitorStatus" style="font-size:13px;color:#999;">状态：等待中..</span>
+          <button class="btn" onclick="clearMonitorAlerts()">🗑 清除预警</button>
+        </div>
+      </div>
+      <div class="section">
+        <h3>🚨 实时预警 <span id="alertCount" style="background:#e74c3c;color:white;padding:1px 8px;border-radius:10px;font-size:11px;margin-left:6px;">0</span></h3>
+        <div id="alertList" style="margin-top:8px;"><div class="empty-state">暂无预警</div></div>
+      </div>
+      <div class="section">
+        <h3>📵 自选股概览</h3>
+        <div id="monitorStockList"><div class="empty-state">加载中..</div></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // ═══════════════════════════════════════════
+  // 通用
+  // ═══════════════════════════════════════════
+  const API = '';
+  let sessionId = localStorage.getItem('sessionId') || 'default-session';
+  document.getElementById('sessionInput').value = sessionId;
+
+  function switchTab(n) {
+    document.querySelectorAll('.tab-bar button').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    document.getElementById('tab' + n + '-btn').classList.add('active');
+    document.getElementById('tab' + n + '-content').classList.add('active');
+    if (n === 2) { refreshKbStats(); loadGeneralRules(); }
+    if (n === 3) { loadWatchlist(); }
+  }
+
+  // ═══════════════════════════════════════════
+  // Tab1: 股票分析
+  // ═══════════════════════════════════════════
+  function saveSession() {
+    sessionId = document.getElementById('sessionInput').value || 'default-session';
+    localStorage.setItem('sessionId', sessionId);
+  }
+  function newSession() {
+    sessionId = 'sess_' + Date.now().toString(36);
+    document.getElementById('sessionInput').value = sessionId;
+    localStorage.setItem('sessionId', sessionId);
+    clearChat();
+  }
+  function addMessage(text, type) {
+    const chat = document.getElementById('chatBox');
+    const div = document.createElement('div');
+    div.className = 'msg ' + type;
+    if (type === 'user') div.innerHTML = '<div class="label">🧑 你</div>' + escHtml(text);
+    else if (type === 'agent') div.innerHTML = '<div class="label">🤖 Agent</div>' + escHtml(text);
+    else div.textContent = text;
+    chat.appendChild(div);
+    chat.scrollTop = chat.scrollHeight;
+    return div;
+  }
+  function removeLoading() { const el = document.querySelector('.msg.loading'); if (el) el.remove(); }
+  function escHtml(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+  function handleKey(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }
+  function sendMessage() {
+    const input = document.getElementById('inputBox');
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = ''; input.style.height = 'auto';
+    addMessage(text, 'user');
+    callAnalyze(text);
+  }
+  function quickAnalyze(stock) {
+    const text = '分析一下' + stock + '，当前趋势如何？';
+    addMessage(text, 'user');
+    callAnalyze(text);
+  }
+  function analyzeCurrent() {
+    const text = document.getElementById('inputBox').value.trim();
+    if (text) { sendMessage(); return; }
+    quickAnalyze('贵州茅台');
+  }
+
+  let isAnalyzing = false;
+  async function callAnalyze(text) {
+    if (isAnalyzing) return;
+    const btn = document.getElementById('sendBtn');
+    isAnalyzing = true; btn.disabled = true;
+    const loading = addMessage('分析中...（约 10-30 秒）', 'loading');
+    try {
+      const res = await fetch(API + '/api/stock/analyze', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Session-Id': sessionId }, body: text
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.text();
+      removeLoading();
+      addMessage(data, 'agent');
+    } catch (e) {
+      removeLoading();
+      addMessage('请求失败: ' + e.message, 'agent');
+    } finally {
+      isAnalyzing = false; btn.disabled = false;
+    }
+  }
+
+  async function sendDailyReport() {
+    const btn = document.getElementById('sendBtn');
+    btn.disabled = true;
+    const loading = addMessage('正在获取日报...', 'loading');
+    try {
+      const res = await fetch(API + '/api/stock/daily-report', { method: 'POST' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      removeLoading();
+      let text = '📊 每日日报 (' + data.date + ')\n自选股: ' + data.totalStocks + ' 只\n';
+      if (data.alerts > 0) text += '⚠️ 异动预警: ' + data.alerts + ' 只\n\n';
+      for (const s of data.stocks) {
+        if (s.error) { text += s.code + ': ' + s.error + '\n\n'; continue; }
+        text += s.name + ' (' + s.code + ')\n';
+        text += '  价格: ' + s.price + '  涨跌幅: ' + s.changePercent + '\n';
+        text += '  市值: ' + s.marketCap + '  PE: ' + s.pe + '\n';
+        text += '  状态: ' + s.alert + '\n\n';
+      }
+      addMessage(text, 'agent');
+    } catch (e) {
+      removeLoading();
+      addMessage('获取日报失败: ' + e.message, 'agent');
+    } finally { btn.disabled = false; }
+  }
+
+  function clearChat() {
+    document.getElementById('chatBox').innerHTML = '<div class="msg system">对话已清空</div>';
+  }
+
+  // ═══════════════════════════════════════════
+  // Tab2: 知识管理
+  // ═══════════════════════════════════════════
+  async function addGeneralRule() {
+    const content = document.getElementById('ruleInput').value.trim();
+    const source = document.getElementById('ruleSource').value.trim();
+    if (!content) { alert('请输入规则内容'); return; }
+    try {
+      const res = await fetch(API + '/api/knowledge/general-rule', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content, source })
+      });
+      const data = await res.json();
+      if (data.success) {
+        document.getElementById('ruleInput').value = '';
+        document.getElementById('ruleSource').value = '';
+        loadGeneralRules();
+        refreshKbStats();
+      } else { alert('添加失败: ' + (data.message || '')); }
+    } catch (e) { alert('请求失败: ' + e.message); }
+  }
+
+  async function loadGeneralRules() {
+    const wrap = document.getElementById('ruleList');
+    try {
+      const res = await fetch(API + '/api/knowledge/general-rules');
+      const data = await res.json();
+      if (!data.success || data.count === 0) {
+        wrap.innerHTML = '<div class="empty-state" style="padding:10px;">暂无通用规则，请添加</div>';
+        return;
+      }
+      wrap.innerHTML = data.rules.map(r =>
+        '<div class="rule-item">' +
+          '<div><div class="text">' + escHtml(r.content) + '</div><div class="meta">来源: ' + escHtml(r.source||'-') + ' · ' + r.createdAt + '</div></div>' +
+          '<button class="del" onclick="deleteGeneralRule(\'' + r.entryId + '\')">✕</button>' +
+        '</div>'
+      ).join('');
+    } catch (e) {
+      wrap.innerHTML = '<div class="empty-state" style="padding:10px;color:#e74c3c;">加载失败: ' + e.message + '</div>';
+    }
+  }
+
+  async function deleteGeneralRule(entryId) {
+    if (!confirm('确认删除此规则？')) return;
+    try {
+      await fetch(API + '/api/knowledge/general-rule/' + entryId, { method: 'DELETE' });
+      loadGeneralRules();
+      refreshKbStats();
+    } catch (e) { alert('删除失败: ' + e.message); }
+  }
+
+  async function importCsv() {
+    const fileInput = document.getElementById('csvFile');
+    const file = fileInput.files[0];
+    if (!file) { alert('请选择 CSV 文件'); return; }
+    const resultBox = document.getElementById('csvResult');
+    resultBox.style.display = 'none';
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const res = await fetch(API + '/api/knowledge/import-csv', { method: 'POST', body: formData });
+      const data = await res.json();
+      resultBox.style.display = 'block';
+      if (data.success) {
+        resultBox.style.background = '#e8f5e9';
+        resultBox.textContent = '✅ ' + data.summary;
+        refreshKbStats();
+      } else {
+        resultBox.style.background = '#ffebee';
+        resultBox.textContent = '❌ ' + (data.message || '导入失败');
+      }
+      fileInput.value = '';
+    } catch (e) {
+      resultBox.style.display = 'block';
+      resultBox.style.background = '#ffebee';
+      resultBox.textContent = '❌ 请求失败: ' + e.message;
+    }
+  }
+
+  async function refreshKbStats() {
+    try {
+      const res = await fetch(API + '/api/knowledge/stats');
+      const data = await res.json();
+      if (data.success) {
+        document.getElementById('kbEntryCount').textContent = data.entryCount;
+        document.getElementById('kbStockCount').textContent = data.stockCount;
+      }
+    } catch (e) {}
+  }
+
+  async function clearKb() {
+    try {
+      await fetch(API + '/api/knowledge/clear', { method: 'DELETE' });
+      loadGeneralRules();
+      refreshKbStats();
+    } catch (e) { alert('清空失败: ' + e.message); }
+  }
+
+  async function rebuildKb() {
+    try {
+      await fetch(API + '/api/knowledge/rebuild', { method: 'POST' });
+      alert('索引重建完成');
+      refreshKbStats();
+    } catch (e) { alert('重建失败: ' + e.message); }
+  }
+
+  // ═══════════════════════════════════════════
+  // Tab3: 自选股
+  // ═══════════════════════════════════════════
+  async function addWatchlist() {
+    const code = document.getElementById('wlCode').value.trim();
+    const name = document.getElementById('wlName').value.trim();
+    const note = document.getElementById('wlNote').value.trim();
+    if (!code || !name) { alert('请输入股票代码和名称'); return; }
+    try {
+      const res = await fetch(API + '/api/watchlist/add', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stockCode: code, stockName: name, note })
+      });
+      const data = await res.json();
+      if (data.success) {
+        document.getElementById('wlCode').value = '';
+        document.getElementById('wlName').value = '';
+        document.getElementById('wlNote').value = '';
+        loadWatchlist();
+        loadWatchlistQuickBar();
+      } else {
+        alert(data.message || '添加失败');
+      }
+    } catch (e) { alert('请求失败: ' + e.message); }
+  }
+
+  async function loadWatchlist() {
+    const wrap = document.getElementById('wlTableWrap');
+    try {
+      const res = await fetch(API + '/api/watchlist/list');
+      const data = await res.json();
+      if (!data.success || data.count === 0) {
+        wrap.innerHTML = '<div class="empty-state">暂无自选股，请添加</div>';
+        return;
+      }
+      let html = '<table><thead><tr><th>代码</th><th>名称</th><th>备注</th><th>添加时间</th><th>操作</th></tr></thead><tbody>';
+      for (const s of data.list) {
+        html += '<tr>' +
+          '<td>' + escHtml(s.stockCode) + '</td>' +
+          '<td>' + escHtml(s.stockName) + '</td>' +
+          '<td>' + escHtml(s.note || '-') + '</td>' +
+          '<td style="font-size:12px;color:#888;">' + (s.createdAt ? s.createdAt.substring(0,10) : '-') + '</td>' +
+          '<td>' +
+            '<button class="op-btn" onclick="quickAnalyzeFromWL(\'' + s.stockName + '\')">分析</button>' +
+            '<button class="op-btn del" onclick="deleteWatchlist(' + s.id + ')">删除</button>' +
+          '</td></tr>';
+      }
+      html += '</tbody></table>';
+      wrap.innerHTML = html;
+    } catch (e) {
+      wrap.innerHTML = '<div class="empty-state" style="color:#e74c3c;">加载失败: ' + e.message + '</div>';
+    }
+  }
+
+  async function deleteWatchlist(id) {
+    if (!confirm('确认删除？')) return;
+    try {
+      await fetch(API + '/api/watchlist/' + id, { method: 'DELETE' });
+      loadWatchlist();
+      loadWatchlistQuickBar();
+    } catch (e) { alert('删除失败: ' + e.message); }
+  }
+
+  function quickAnalyzeFromWL(name) {
+    switchTab(1);
+    quickAnalyze(name);
+  }
+
+  async function loadWatchlistQuickBar() {
+    const hint = document.getElementById('wlQuickHint');
+    try {
+      const res = await fetch(API + '/api/watchlist/list');
+      const data = await res.json();
+      if (data.success && data.count > 0) {
+        hint.innerHTML = '⭐ 自选: ' + data.list.map(s => '<button onclick="quickAnalyze(\'' + s.stockName + '\')" style="padding:2px 8px;border:1px solid #e0e0e0;border-radius:10px;background:white;cursor:pointer;font-size:11px;margin:0 2px;">' + escHtml(s.stockName) + '</button>').join('');
+      }
+    } catch (e) {}
+  }
+
+  // 初始化
+  setTimeout(() => { loadWatchlistQuickBar(); }, 500);
+</script>
+<script src="/js/echarts.min.js"></script>
+</body>
+</html>

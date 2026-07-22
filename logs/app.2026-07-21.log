@@ -1,0 +1,14 @@
+2026-07-21 23:59:52.147  INFO --- [           main] c.e.j.JavaCodeAgentApplication          : Starting JavaCodeAgentApplication using Java 21.0.2 with PID 53740 (E:\github\JavaAgent\java-code-agent\target\classes started by 32036 in E:\github\JavaAgent\java-code-agent)
+2026-07-21 23:59:52.157  INFO --- [           main] c.e.j.JavaCodeAgentApplication          : No active profile set, falling back to 1 default profile: "default"
+2026-07-21 23:59:53.262  INFO --- [           main] .s.d.r.c.RepositoryConfigurationDelegate: Multiple Spring Data modules found, entering strict repository configuration mode
+2026-07-21 23:59:53.270  INFO --- [           main] .s.d.r.c.RepositoryConfigurationDelegate: Bootstrapping Spring Data Redis repositories in DEFAULT mode.
+2026-07-21 23:59:53.337  INFO --- [           main] .s.d.r.c.RepositoryConfigurationDelegate: Finished Spring Data repository scanning in 30 ms. Found 0 Redis repository interfaces.
+2026-07-21 23:59:54.412  INFO --- [           main] o.s.b.w.embedded.tomcat.TomcatWebServer : Tomcat initialized with port 8080 (http)
+2026-07-21 23:59:54.431  INFO --- [           main] o.a.coyote.http11.Http11NioProtocol     : Initializing ProtocolHandler ["http-nio-8080"]
+2026-07-21 23:59:54.437  INFO --- [           main] o.apache.catalina.core.StandardService  : Starting service [Tomcat]
+2026-07-21 23:59:54.438  INFO --- [           main] o.apache.catalina.core.StandardEngine   : Starting Servlet engine: [Apache Tomcat/10.1.16]
+2026-07-21 23:59:54.591  INFO --- [           main] o.a.c.c.C.[Tomcat].[localhost].[/]      : Initializing Spring embedded WebApplicationContext
+2026-07-21 23:59:54.594  INFO --- [           main] w.s.c.ServletWebServerApplicationContext: Root WebApplicationContext: initialization completed in 2365 ms
+2026-07-21 23:59:59.180  WARN --- [           main] o.o.selenium.devtools.CdpVersionFinder  : Unable to find CDP implementation matching 150
+2026-07-21 23:59:59.182  WARN --- [           main] o.o.selenium.chromium.ChromiumDriver    : Unable to find version of CDP to use for 150.0.4078.83. You may need to include a dependency on a specific version of the CDP using something similar to `org.seleniumhq.selenium:selenium-devtools-v86:4.14.1` where the version ("v86") matches the version of the chromium-based browser you're using and the version number of the artifact is the same as Selenium's.
+2026-07-21 23:59:59.190  INFO --- [           main] c.e.javacodeagent.util.SeleniumDriver   : 使用 Service 模式加载本地 EdgeDriver: E:\github\JavaAgent\java-code-agent\msedgedriver.exe
