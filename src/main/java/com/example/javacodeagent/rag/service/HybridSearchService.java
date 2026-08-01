@@ -27,13 +27,20 @@ public class HybridSearchService {
     private static final double VECTOR_WEIGHT = 0.70d;
     private static final double BM25_WEIGHT = 0.30d;
     private static final int FINAL_TOP_K = 5;
+    /** 融合后进入精排的候选池大小 */
+    private static final int FUSION_CANDIDATES = 30;
 
     private final LocalVectorService localVectorService;
     private final BM25Searcher bm25Searcher;
+    private final RerankService rerankService;
 
-    public HybridSearchService(LocalVectorService localVectorService, BM25Searcher bm25Searcher) {
+    public HybridSearchService(
+            LocalVectorService localVectorService,
+            BM25Searcher bm25Searcher,
+            RerankService rerankService) {
         this.localVectorService = localVectorService;
         this.bm25Searcher = bm25Searcher;
+        this.rerankService = rerankService;
     }
 
     /**
@@ -53,7 +60,8 @@ public class HybridSearchService {
             List<LocalVectorService.SimilarChunk> vectorResults = vectorFuture.join();
             List<BM25Searcher.Bm25Result> bm25Results = bm25Future.join();
 
-            return fuseResults(vectorResults, bm25Results);
+            List<HybridSearchResult> candidates = fuseResults(vectorResults, bm25Results, FUSION_CANDIDATES);
+            return rerankResults(candidates, queryText, FINAL_TOP_K);
         }
     }
 
@@ -66,7 +74,8 @@ public class HybridSearchService {
      */
     private List<HybridSearchResult> fuseResults(
             List<LocalVectorService.SimilarChunk> vectorResults,
-            List<BM25Searcher.Bm25Result> bm25Results
+            List<BM25Searcher.Bm25Result> bm25Results,
+            int candidateLimit
     ) {
         Map<String, FusionAccumulator> merged = new HashMap<>();
         applyVectorScores(vectorResults, merged);
@@ -74,9 +83,45 @@ public class HybridSearchService {
 
         return merged.values().stream()
                 .sorted(Comparator.comparingDouble(FusionAccumulator::finalScore).reversed())
-                .limit(FINAL_TOP_K)
+                .limit(candidateLimit)
                 .map(FusionAccumulator::toResult)
                 .toList();
+    }
+
+    /**
+     * 对融合后的候选执行精排并截取最终 TopK。
+     * 精排失败或不可用时，按融合排序取前 topK。
+     */
+    private List<HybridSearchResult> rerankResults(
+            List<HybridSearchResult> candidates, String queryText, int topK) {
+        if (candidates.isEmpty()) {
+            return List.of();
+        }
+
+        List<String> docs = candidates.stream()
+                .map(HybridSearchResult::content)
+                .toList();
+        List<RerankService.RerankResult> results = rerankService.rerank(queryText, docs, topK);
+
+        if (results.isEmpty()) {
+            return candidates.size() <= topK ? candidates : candidates.subList(0, topK);
+        }
+
+        List<HybridSearchResult> out = new ArrayList<>(results.size());
+        for (RerankService.RerankResult rr : results) {
+            int idx = rr.index();
+            if (idx < 0 || idx >= candidates.size()) {
+                continue;
+            }
+            HybridSearchResult c = candidates.get(idx);
+            out.add(new HybridSearchResult(
+                    c.chunkId(), c.content(), c.source(), c.tokenCount(),
+                    rr.score(),
+                    c.vectorRawScore(), c.bm25RawScore(),
+                    c.vectorWeightedScore(), c.bm25WeightedScore(),
+                    c.vectorRank(), c.bm25Rank(), c.hitByVector(), c.hitByBm25()));
+        }
+        return out;
     }
 
     private void applyVectorScores(

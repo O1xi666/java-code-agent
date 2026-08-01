@@ -10,7 +10,8 @@ import com.example.javacodeagent.tool.StockMarketTool;
 import com.example.javacodeagent.tool.StockNewsTool;
 import com.example.javacodeagent.util.DataCacheManager;
 import com.example.javacodeagent.service.AgentTracerService;
-import dev.langchain4j.memory.ChatMemory;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatLanguageModel;
 import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.service.AiServices;
@@ -23,17 +24,29 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import java.util.List;
+
 /**
  * 股票分析 Agent
  *
- * <p>在LLM分析之前，自动从知识库（KnowledgeBaseService）召回与该股票相关的投研知识片段，
- * 以【参考知识】形式嵌入用户输入，LLM回答时需基于这些知识并标注引用来源，
+ * <p>在 LLM 分析之前，自动从知识库（KnowledgeBaseService）召回升与该股票相关的投研知识片段，
+ * 以【参考知识】形式嵌入用户输入，LLM 回答时需基于这些知识并标注引用来源，
  * 从而降低幻觉，提高分析的可溯源性。
+ *
+ * <p><b>记忆架构</b>：
+ * <ul>
+ *   <li>短期记忆（会话级）：{@link SessionMemory}，Redis 存储全量对话历史，7 天 TTL</li>
+ *   <li>工作记忆附属缓存：{@link com.example.javacodeagent.rag.util.RetrievalContextCache}，RAG 上下文按数据类型 TTL</li>
+ *   <li>工作记忆：每次请求动态构建（系统 Prompt + 最近 {@value #INFERENCE_WINDOW} 条对话 + 当轮 RAG 结果），请求结束时释放</li>
+ * </ul>
  */
 @Component
 public class StockAgent {
 
     private static final Logger log = LoggerFactory.getLogger(StockAgent.class);
+
+    /** 每次推理最多载入的对话轮数 */
+    static final int INFERENCE_WINDOW = 15;
 
     private final ChatLanguageModel chatLanguageModel;
     private final ContentRetriever contentRetriever;
@@ -42,7 +55,7 @@ public class StockAgent {
     private final StockNewsTool stockNewsTool;
     private final StockIndicatorTool stockIndicatorTool;
     private final StockCodeTool stockCodeTool;
-    private final ChatMemoryHolder memoryHolder;
+    private final SessionMemory sessionMemory;
     private final DataCacheManager cacheManager;
     private final AgentTracerService tracer;
     private final KnowledgeBaseService knowledgeBaseService;
@@ -57,7 +70,7 @@ public class StockAgent {
             StockNewsTool stockNewsTool,
             StockIndicatorTool stockIndicatorTool,
             StockCodeTool stockCodeTool,
-            ChatMemoryHolder memoryHolder,
+            SessionMemory sessionMemory,
             KnowledgeBaseService knowledgeBaseService
     ) {
         this.chatLanguageModel = chatLanguageModel;
@@ -70,7 +83,7 @@ public class StockAgent {
                 stockIndicatorTool != null, stockCodeTool != null);
         this.stockIndicatorTool = stockIndicatorTool;
         this.stockCodeTool = stockCodeTool;
-        this.memoryHolder = memoryHolder;
+        this.sessionMemory = sessionMemory;
         this.cacheManager = cacheManager;
         this.tracer = tracer;
         this.knowledgeBaseService = knowledgeBaseService;
@@ -79,13 +92,14 @@ public class StockAgent {
     /**
      * 分析股票（含知识库召回增强）。
      *
-     * <p>流程：
+     * <p>记忆流程：
      * <ol>
-     *   <li>从用户输入中提取股票代码</li>
-     *   <li>从知识库召回相关片段 → 构建【参考知识】附录</li>
-     *   <li>将知识附录拼接到用户输入前缀</li>
-     *   <li>调用 LLM（LLM在 Prompt 中被要求基于参考知识作答并标注引用来源）</li>
-     *   <li>返回带引用标注的分析结果</li>
+     *   <li>判断缓存命中（仅无历史会话时使用 LLM 结果缓存）</li>
+     *   <li>从知识库召回相关片段 → enrich 用户输入</li>
+     *   <li>从 {@link SessionMemory} 加载最近 {@value #INFERENCE_WINDOW} 条历史消息</li>
+     *   <li>创建临时工作记忆（MessageWindowChatMemory），填入历史</li>
+     *   <li>调用 LLM（AiServices 自动将新用户消息和回复加入工作记忆）</li>
+     *   <li>将本轮的输入和回复持久化到 SessionMemory</li>
      * </ol>
      */
     public String analyze(String userInput, String sessionId) {
@@ -94,12 +108,12 @@ public class StockAgent {
         String traceId = tracer.startTrace(sessionId, userInput);
 
         try {
-            // 缓存检查
+            // ── 缓存检查 ──
             String cacheKey = buildAnalyzeCacheKey(userInput);
             boolean useCache = cacheKey != null;
             if (useCache) {
                 try {
-                    if (memoryHolder.hasMemory(sessionId)) useCache = false;
+                    if (sessionMemory.hasSession(sessionId)) useCache = false;
                 } catch (Exception ignored) {}
             }
             if (useCache) {
@@ -111,18 +125,33 @@ public class StockAgent {
                 }
             }
 
-            // ── 知识库召回增强 ────────────────────────────────────
+            // ── 知识库召回增强 ──
             String enrichedInput = enrichWithKnowledge(userInput);
 
-            ChatMemory chatMemory = memoryHolder.getChatMemory(sessionId);
+            // ── 构建工作记忆：从 SessionMemory 取出最近 N 条作为推理上下文 ──
+            List<ChatMessage> lastMessages = sessionMemory.getLastMessages(sessionId, INFERENCE_WINDOW);
+            MessageWindowChatMemory workingMemory = MessageWindowChatMemory.builder()
+                    .maxMessages(INFERENCE_WINDOW)
+                    .id(sessionId)
+                    .build();
+            for (ChatMessage msg : lastMessages) {
+                workingMemory.add(msg);
+            }
+
+            // ── 构建 AI Service 并调用 ──
             StockAnalysisInterface agent = AiServices.builder(StockAnalysisInterface.class)
                     .chatLanguageModel(chatLanguageModel)
-                    .chatMemory(chatMemory)
+                    .chatMemory(workingMemory)
                     .contentRetriever(contentRetriever)
                     .tools(stockMarketTool, stockFinancialTool, stockNewsTool, stockIndicatorTool, stockCodeTool)
                     .build();
             String result = agent.execute(enrichedInput);
 
+            // ── 持久化本轮对话到短期记忆 ──
+            sessionMemory.saveUserMessage(sessionId, enrichedInput);
+            sessionMemory.saveAssistantMessage(sessionId, result);
+
+            // ── 写缓存（无历史会话时可用） ──
             if (useCache) {
                 cacheManager.put(cacheKey, result, CachePolicy.LLM_ANALYSIS);
                 log.info("LLM 分析结果已缓存: key={}", cacheKey);
@@ -148,7 +177,7 @@ public class StockAgent {
      *   <li>先用 stockCodeTool 提取股票代码</li>
      *   <li>若有代码，按代码过滤检索知识库（更精确）</li>
      *   <li>若无代码，按用户输入全文语义检索（模糊匹配）</li>
-     *   <li>将召回结果格式化为【参考知识】附录拼接到用户输入前面</li>
+     *   <li>将召回结果格式化为【参考知识】附件拼接到用户输入前面</li>
      * </ul>
      */
     private String enrichWithKnowledge(String userInput) {
@@ -156,11 +185,9 @@ public class StockAgent {
         String knowledgeContext;
 
         if (stockCode != null) {
-            // 按股票代码检索（精确召回）
             knowledgeContext = knowledgeBaseService.buildKnowledgeContext(userInput, stockCode);
             log.info("知识库按代码召回: stockCode={}, contextLength={}", stockCode, knowledgeContext.length());
         } else {
-            // 按全文语义检索（模糊召回）
             knowledgeContext = knowledgeBaseService.buildKnowledgeContext(userInput, null);
             log.info("知识库全文召回完成: contextLength={}", knowledgeContext.length());
         }
@@ -169,7 +196,6 @@ public class StockAgent {
             return userInput;
         }
 
-        // 将【参考知识】附录拼接到用户输入前
         String prefix = knowledgeContext + "\n【用户问题】\n";
         String enriched = prefix + userInput;
 
@@ -185,7 +211,7 @@ public class StockAgent {
 
     /**
      * 从用户输入中提取股票代码，构建 LLM 缓存键。
-     * 例如 "分析一下贵州茅台" → "llm:analysis:1.600519"
+     * 例如 "分析一下贵州茅台"  →  "llm:analysis:1.600519"
      */
     private String buildAnalyzeCacheKey(String userInput) {
         if (userInput == null || userInput.isBlank()) return null;

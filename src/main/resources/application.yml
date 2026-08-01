@@ -1,6 +1,12 @@
 server:
   port: 8080
 
+rag:
+  rerank:
+    base-url: http://localhost:11434
+    model: dengcao/Qwen3-Reranker-0.6B:Q8_0
+    timeout-seconds: 30
+
 spring:
   data:
     redis:

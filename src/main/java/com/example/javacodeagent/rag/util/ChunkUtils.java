@@ -51,6 +51,8 @@ public final class ChunkUtils {
      * 分块步长：每次向前推进的 token 数。
      */
     private static final int STRIDE_TOKENS = CHUNK_SIZE_TOKENS - OVERLAP_TOKENS;
+    private static final int DEFAULT_CHUNK_SIZE_TOKENS = 400;
+    private static final double DEFAULT_OVERLAP_RATIO = 0.20d;
 
     /**
      * 控制字符（除换行、回车、制表符）清理正则。
@@ -146,47 +148,79 @@ public final class ChunkUtils {
     }
 
     /**
-     * 核心分块逻辑：
-     * - 固定窗口：512 token
-     * - 固定重叠：102 token（20%）
+     * 句子边界感知分块：
+     * 1. 先按句子分割（。；！？）
+     * 2. 累加句子至达到 chunkSize（token）
+     * 3. 按重叠比例从上一块尾部回退若干 token 开始下一块
+     * 4. 绝不腰斩句子
      */
     public static List<Chunk> chunkByToken(String cleanedText, String source) {
+        return chunkByToken(cleanedText, source, DEFAULT_CHUNK_SIZE_TOKENS, DEFAULT_OVERLAP_RATIO);
+    }
+
+    /**
+     * 句子边界感知分块（可配置参数）。
+     *
+     * @param cleanedText    清洗后的文本
+     * @param source         来源标识
+     * @param chunkSizeTokens 每块目标 token 数
+     * @param overlapRatio    重叠比例（0.0 ~ 1.0）
+     */
+    public static List<Chunk> chunkByToken(String cleanedText, String source, int chunkSizeTokens, double overlapRatio) {
         List<Chunk> chunks = new ArrayList<>();
-        if (cleanedText == null || cleanedText.isBlank()) {
-            return chunks;
+        if (cleanedText == null || cleanedText.isBlank()) return chunks;
+
+        // 1. 按句子分割
+        //    保留分隔符在前一句末尾，如 "。；！？.!?" 
+        String[] rawParts = cleanedText.split("(?<=[\u3002\uff1b\uff01\uff1f.!?])");
+        List<String> sentences = new ArrayList<>();
+        for (String s : rawParts) {
+            String t = s.trim();
+            if (!t.isBlank()) sentences.add(t);
+        }
+        if (sentences.isEmpty()) return chunks;
+
+        // 2. 预计算每句的 token 数
+        List<IntArrayList> sentenceTokens = new ArrayList<>(sentences.size());
+        for (String s : sentences) {
+            sentenceTokens.add(ENCODING.encode(s));
         }
 
-        IntArrayList allTokens = ENCODING.encode(cleanedText);
-        if (allTokens.isEmpty()) {
-            return chunks;
-        }
+        int overlapTokens = (int) Math.round(chunkSizeTokens * overlapRatio);
+        if (overlapTokens < 0) overlapTokens = 0;
+        int minStride = Math.max(1, chunkSizeTokens - overlapTokens);
 
-        int cursor = 0;
         int index = 1;
-        while (cursor < allTokens.size()) {
-            int end = Math.min(cursor + CHUNK_SIZE_TOKENS, allTokens.size());
-            IntArrayList tokenWindow = new IntArrayList(end - cursor);
-            for (int i = cursor; i < end; i++) {
-                tokenWindow.add(allTokens.get(i));
+        int cursor = 0;
+        while (cursor < sentences.size()) {
+            // 累加句子直到达到 chunkSize 或末尾
+            int tokenAccum = 0;
+            int endIdx = cursor;
+            while (endIdx < sentences.size() && tokenAccum < chunkSizeTokens) {
+                tokenAccum += sentenceTokens.get(endIdx).size();
+                endIdx++;
             }
-            String chunkText = ENCODING.decode(tokenWindow).trim();
+            if (endIdx == cursor) break; // 保护：单个句子超 chunkSize 时也要推进
 
+            // 构建当前块文本
+            String chunkText = String.join("", sentences.subList(cursor, endIdx)).trim();
             if (!chunkText.isBlank()) {
-                chunks.add(new Chunk(
-                        generateChunkId(source, index),
-                        chunkText,
-                        source,
-                        tokenWindow.size()
-                ));
+                chunks.add(new Chunk(generateChunkId(source, index), chunkText, source, tokenAccum));
                 index++;
             }
 
-            if (end >= allTokens.size()) {
-                break;
-            }
+            if (endIdx >= sentences.size()) break;
 
-            // 固定步长推进，保证 20% overlap
-            cursor += STRIDE_TOKENS;
+            // 计算下一块的起始位置：从 endIdx 向前回退 overlapTokens
+            int newCursor = endIdx;
+            int backAccum = 0;
+            while (newCursor > cursor && backAccum < overlapTokens) {
+                newCursor--;
+                backAccum += sentenceTokens.get(newCursor).size();
+            }
+            // 保证至少向前推进 1 句
+            if (newCursor <= cursor) newCursor = cursor + 1;
+            cursor = newCursor;
         }
 
         return chunks;

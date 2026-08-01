@@ -24,11 +24,11 @@ import java.util.List;
  * - 为什么不用 Milvus？因为本地场景（几十到几百份研报）内存绰绰有余，
  *   引入 Milvus 增加了运维成本但没有实际收益
  * - InMemoryEmbeddingStore 由 LangChain4j 内置，是轻量级向量存储的最佳选择
- * - 向量维度固定为 768（nomic-embed-text 模型输出维度）
+ * - 向量维度固定为 768（bge-base-zh-v1.5 模型输出维度）
  *
  * 面试可能会问：
  * Q: 为什么选择 768 维？
- * A: 由 embedding 模型决定，nomic-embed-text 输出 768 维向量，
+ * A: 由 embedding 模型决定，bge-base-zh-v1.5 输出 768 维向量，
  *    这个维度在准确率和计算成本之间取得了较好的平衡
  *
  * Q: 余弦相似度的公式是什么？

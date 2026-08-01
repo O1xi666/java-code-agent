@@ -84,7 +84,7 @@ public class DocumentService {
         String cleanedText = ChunkUtils.cleanText(text);
 
         // 4. 分块（512 token，20% overlap）
-        List<ChunkUtils.Chunk> chunks = ChunkUtils.chunkByToken(cleanedText, originalName);
+        List<ChunkUtils.Chunk> chunks = ChunkUtils.chunkByToken(cleanedText, originalName, 400, 0.20);
 
         // 5. 向量化并存入向量库 + BM25
         List<LocalVectorService.VectorRecord> vectorRecords = new ArrayList<>();

@@ -2,6 +2,10 @@ package com.example.javacodeagent.rag.service;
 
 import com.example.javacodeagent.rag.model.KnowledgeEntry;
 import com.example.javacodeagent.rag.util.BM25Searcher;
+import com.example.javacodeagent.rag.util.SimHash;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import com.example.javacodeagent.rag.util.ChunkUtils;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -58,6 +62,8 @@ public class KnowledgeBaseService {
 
     private static final int VECTOR_CANDIDATES = 30;
     private static final int DEFAULT_TOP_K = 5;
+    /** 融合后进入精排的候选池大小 */
+    private static final int RERANK_CANDIDATES = 30;
     private static final double VECTOR_WEIGHT = 0.70;
     private static final double BM25_WEIGHT = 0.30;
 
@@ -73,16 +79,18 @@ public class KnowledgeBaseService {
     private final EmbeddingModel embeddingModel;
     private final BM25Searcher bm25Searcher;
     private final ObjectMapper objectMapper;
+    private final RerankService rerankService;
 
     private InMemoryEmbeddingStore<TextSegment> vectorStore;
     private final List<KnowledgeEntry> entries = new CopyOnWriteArrayList<>();
 
-    public KnowledgeBaseService(EmbeddingModel embeddingModel) {
+    public KnowledgeBaseService(EmbeddingModel embeddingModel, RerankService rerankService) {
         this.embeddingModel = embeddingModel;
         this.bm25Searcher = new BM25Searcher(Path.of(BM25_INDEX_DIR));
         this.objectMapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        this.rerankService = rerankService;
     }
 
     // ═══════════════════════════════════════════════════
@@ -227,8 +235,8 @@ public class KnowledgeBaseService {
                         errors.add("第" + lineNum + "行缺少股票代码或内容");
                         continue;
                     }
-                    for (String chunk : splitContentIfLong(content)) {
-                        parsed.add(KnowledgeEntry.fromRow(stockCode, stockName, chunk, category, source, tags));
+                    for (ChunkUtils.Chunk chunk : ChunkUtils.chunkByToken(content, "csv:" + stockCode + ":" + stockName, 300, 0.10)) {
+                        parsed.add(KnowledgeEntry.fromRow(stockCode, stockName, chunk.content(), category, source, tags));
                     }
                 } catch (Exception e) {
                     skippedRows++;
@@ -264,7 +272,48 @@ public class KnowledgeBaseService {
         List<EmbeddingMatch<TextSegment>> vectorMatches = vectorStore.findRelevant(queryEmbedding, vectorK);
         List<BM25Searcher.Bm25Result> bm25Results = bm25Searcher.searchTopChunks(query);
 
-        return fuseAndFilter(vectorMatches, bm25Results, filterByStock ? stockCode.trim() : null, k);
+        // 1. 融合召回生成候选池（供精排使用，不直接截断到 topK）
+        List<RetrievedKnowledge> candidates = fuseAndFilter(
+                vectorMatches, bm25Results,
+                filterByStock ? stockCode.trim() : null,
+                RERANK_CANDIDATES, query);
+
+        // 2. 精排后取 TopK；精排不可用时回退到融合排序
+        return rerankAndSelect(candidates, query, k);
+    }
+
+    /**
+     * 对候选列表执行精排并截取 topK。
+     * 精排失败或不可用时，直接按融合排序顺序取前 topK。
+     */
+    private List<RetrievedKnowledge> rerankAndSelect(
+            List<RetrievedKnowledge> candidates, String query, int topK) {
+        if (candidates.isEmpty()) {
+            return List.of();
+        }
+
+        List<String> docs = candidates.stream()
+                .map(RetrievedKnowledge::getContent)
+                .toList();
+        List<RerankService.RerankResult> results = rerankService.rerank(query, docs, topK);
+
+        if (results.isEmpty()) {
+            return candidates.size() <= topK ? candidates : candidates.subList(0, topK);
+        }
+
+        List<RetrievedKnowledge> out = new ArrayList<>(results.size());
+        for (RerankService.RerankResult rr : results) {
+            int idx = rr.index();
+            if (idx < 0 || idx >= candidates.size()) {
+                continue;
+            }
+            RetrievedKnowledge c = candidates.get(idx);
+            out.add(new RetrievedKnowledge(
+                    c.getEntryId(), c.getStockCode(), c.getStockName(),
+                    c.getContent(), c.getCategory(), c.getSource(), c.getTags(),
+                    rr.score()));
+        }
+        return out;
     }
 
 
@@ -406,7 +455,8 @@ public class KnowledgeBaseService {
     private List<RetrievedKnowledge> fuseAndFilter(
             List<EmbeddingMatch<TextSegment>> vectorMatches,
             List<BM25Searcher.Bm25Result> bm25Results,
-            String stockCodeFilter, int topK) {
+            String stockCodeFilter, int topK,
+            String query) {
 
         Map<String, KnowledgeEntry> entryMap = entries.stream()
                 .collect(Collectors.toMap(KnowledgeEntry::getId, e -> e, (a, b) -> a));
@@ -439,6 +489,66 @@ public class KnowledgeBaseService {
             if (acc.stockCode == null) acc.fill(entry);
         }
 
+        // ── 细排：1. 股票名/代码匹配 ──
+        if (query != null && !query.isBlank()) {
+            for (ScoreAcc a : scoreMap.values()) {
+                if (a.stockCode != null && !a.stockCode.isBlank()) {
+                    String code = a.stockCode.contains(".") ? a.stockCode.substring(2) : a.stockCode;
+                    if (query.contains(code)) { a.totalScore += 0.30; continue; }
+                }
+                if (a.stockName != null && !a.stockName.isBlank()) {
+                    if (query.contains(a.stockName)) {
+                        a.totalScore += 0.25;
+                    } else {
+                        for (int i = 0; i < a.stockName.length() - 1; i++) {
+                            if (query.contains(a.stockName.substring(i, i + 2))) {
+                                a.totalScore += 0.10; break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── 细排：2. 时间权重 ──
+        {
+            Instant now = Instant.now();
+            for (java.util.Map.Entry<String, ScoreAcc> e : scoreMap.entrySet()) {
+                KnowledgeEntry ke = entryMap.get(e.getKey());
+                if (ke != null && ke.getCreatedAt() != null) {
+                    long days = ChronoUnit.DAYS.between(ke.getCreatedAt(), now);
+                    double m;
+                    if (days <= 7) m = 1.50;
+                    else if (days <= 90) m = 1.20;
+                    else if (days <= 365) m = 0.80;
+                    else m = 0.30;
+                    e.getValue().totalScore *= m;
+                }
+            }
+        }
+
+        // ── 细排：3. simHash 去重 ──
+        {
+            java.util.List<String> idList = new java.util.ArrayList<>(scoreMap.keySet());
+            long[] fps = new long[idList.size()];
+            for (int i = 0; i < idList.size(); i++) {
+                ScoreAcc a = scoreMap.get(idList.get(i));
+                fps[i] = (a != null && a.content != null) ? SimHash.compute(a.content) : 0L;
+            }
+            for (int i = 0; i < idList.size(); i++) {
+                for (int j = i + 1; j < idList.size(); j++) {
+                    if (fps[i] != 0L && fps[j] != 0L && SimHash.isDuplicate(fps[i], fps[j])) {
+                        ScoreAcc a = scoreMap.get(idList.get(i));
+                        ScoreAcc b = scoreMap.get(idList.get(j));
+                        if (a != null && b != null) {
+                            if (a.totalScore > b.totalScore) b.totalScore -= 0.50;
+                            else a.totalScore -= 0.50;
+                        }
+                    }
+                }
+            }
+        }
+
         return scoreMap.values().stream()
                 .sorted(Comparator.comparingDouble((ScoreAcc a) -> a.totalScore).reversed())
                 .limit(topK)
@@ -448,21 +558,7 @@ public class KnowledgeBaseService {
                 .toList();
     }
 
-    private List<String> splitContentIfLong(String content) {
-        if (content.length() <= 800) return List.of(content);
-        List<String> chunks = new ArrayList<>();
-        String[] parts = content.split("(?<=[\\u3002\\uff1b.!?])\\s*");
-        StringBuilder current = new StringBuilder();
-        for (String part : parts) {
-            if (current.length() + part.length() > 800 && current.length() > 0) {
-                chunks.add(current.toString().trim());
-                current = new StringBuilder();
-            }
-            current.append(part);
-        }
-        if (current.length() > 0) chunks.add(current.toString().trim());
-        return chunks.isEmpty() ? List.of(content) : chunks;
-    }
+
 
     private String[] parseCsvLine(String line) {
         List<String> fields = new ArrayList<>();

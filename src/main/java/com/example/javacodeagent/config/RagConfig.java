@@ -44,6 +44,7 @@ public class RagConfig {
         return OllamaEmbeddingModel.builder()
                 .baseUrl("http://localhost:11434")
                 .modelName("nomic-embed-text")
+                .modelName("quentinz/bge-base-zh-v1.5:latest")
                 .build();
     }
 
