@@ -80,17 +80,20 @@ public class KnowledgeBaseService {
     private final BM25Searcher bm25Searcher;
     private final ObjectMapper objectMapper;
     private final RerankService rerankService;
+    private final StockExtractor stockExtractor;
 
     private InMemoryEmbeddingStore<TextSegment> vectorStore;
     private final List<KnowledgeEntry> entries = new CopyOnWriteArrayList<>();
 
-    public KnowledgeBaseService(EmbeddingModel embeddingModel, RerankService rerankService) {
+    public KnowledgeBaseService(EmbeddingModel embeddingModel, RerankService rerankService,
+                                StockExtractor stockExtractor) {
         this.embeddingModel = embeddingModel;
         this.bm25Searcher = new BM25Searcher(Path.of(BM25_INDEX_DIR));
         this.objectMapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
         this.rerankService = rerankService;
+        this.stockExtractor = stockExtractor;
     }
 
     // ═══════════════════════════════════════════════════
@@ -261,6 +264,11 @@ public class KnowledgeBaseService {
     // ═══════════════════════════════════════════════════
 
     public List<RetrievedKnowledge> retrieve(String query, String stockCode, int topK) {
+        return retrieve(query, stockCode, topK, stockExtractor.extract(query));
+    }
+
+    public List<RetrievedKnowledge> retrieve(String query, String stockCode, int topK,
+                                             StockExtractor.StockTarget target) {
         if (query == null || query.isBlank()) return List.of();
         if (vectorStore == null || entries.isEmpty()) return List.of();
 
@@ -276,7 +284,7 @@ public class KnowledgeBaseService {
         List<RetrievedKnowledge> candidates = fuseAndFilter(
                 vectorMatches, bm25Results,
                 filterByStock ? stockCode.trim() : null,
-                RERANK_CANDIDATES, query);
+                RERANK_CANDIDATES, target);
 
         // 2. 精排后取 TopK；精排不可用时回退到融合排序
         return rerankAndSelect(candidates, query, k);
@@ -352,10 +360,14 @@ public class KnowledgeBaseService {
      * 构建LLM上下文文本，每行含引用编号、股票名称代码、分类、来源。
      */
     public String buildKnowledgeContext(String query, String stockCode) {
+        return buildKnowledgeContext(query, stockCode, stockExtractor.extract(query));
+    }
+
+    public String buildKnowledgeContext(String query, String stockCode, StockExtractor.StockTarget target) {
         StringBuilder sb = new StringBuilder();
 
         // 1. 通用规则（每次查询都自动附带）
-        List<RetrievedKnowledge> generalRules = retrieve(query, GENERAL_STOCK_CODE, 20);
+        List<RetrievedKnowledge> generalRules = retrieve(query, GENERAL_STOCK_CODE, 20, target);
         if (!generalRules.isEmpty()) {
             sb.append("【通用规则】\n");
             for (int i = 0; i < generalRules.size(); i++) {
@@ -367,7 +379,7 @@ public class KnowledgeBaseService {
 
         // 2. 股票专有知识
         if (stockCode != null && !stockCode.isBlank()) {
-            List<RetrievedKnowledge> results = retrieve(query, stockCode, DEFAULT_TOP_K);
+            List<RetrievedKnowledge> results = retrieve(query, stockCode, DEFAULT_TOP_K, target);
             if (!results.isEmpty()) {
                 sb.append("【参考知识】\n");
                 for (int i = 0; i < results.size(); i++) {
@@ -456,7 +468,7 @@ public class KnowledgeBaseService {
             List<EmbeddingMatch<TextSegment>> vectorMatches,
             List<BM25Searcher.Bm25Result> bm25Results,
             String stockCodeFilter, int topK,
-            String query) {
+            StockExtractor.StockTarget target) {
 
         Map<String, KnowledgeEntry> entryMap = entries.stream()
                 .collect(Collectors.toMap(KnowledgeEntry::getId, e -> e, (a, b) -> a));
@@ -489,23 +501,15 @@ public class KnowledgeBaseService {
             if (acc.stockCode == null) acc.fill(entry);
         }
 
-        // ── 细排：1. 股票名/代码匹配 ──
-        if (query != null && !query.isBlank()) {
+        // ── 细排：1. LLM 抽取目标股票，精确匹配才加分 ──
+        if (target != null && !target.isEmpty()) {
             for (ScoreAcc a : scoreMap.values()) {
-                if (a.stockCode != null && !a.stockCode.isBlank()) {
-                    String code = a.stockCode.contains(".") ? a.stockCode.substring(2) : a.stockCode;
-                    if (query.contains(code)) { a.totalScore += 0.30; continue; }
-                }
-                if (a.stockName != null && !a.stockName.isBlank()) {
-                    if (query.contains(a.stockName)) {
-                        a.totalScore += 0.25;
-                    } else {
-                        for (int i = 0; i < a.stockName.length() - 1; i++) {
-                            if (query.contains(a.stockName.substring(i, i + 2))) {
-                                a.totalScore += 0.10; break;
-                            }
-                        }
-                    }
+                if (target.targetCode() != null && !target.targetCode().isBlank()
+                        && target.targetCode().equals(a.stockCode)) {
+                    a.totalScore += 0.30;
+                } else if (target.targetName() != null && !target.targetName().isBlank()
+                        && target.targetName().equals(a.stockName)) {
+                    a.totalScore += 0.25;
                 }
             }
         }

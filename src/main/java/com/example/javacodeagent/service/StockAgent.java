@@ -3,6 +3,7 @@ package com.example.javacodeagent.service;
 import com.example.javacodeagent.prompt.StockAnalysisPrompt;
 import com.example.javacodeagent.config.CachePolicy;
 import com.example.javacodeagent.rag.service.KnowledgeBaseService;
+import com.example.javacodeagent.rag.service.StockExtractor;
 import com.example.javacodeagent.tool.StockCodeTool;
 import com.example.javacodeagent.tool.StockFinancialTool;
 import com.example.javacodeagent.tool.StockIndicatorTool;
@@ -59,6 +60,7 @@ public class StockAgent {
     private final DataCacheManager cacheManager;
     private final AgentTracerService tracer;
     private final KnowledgeBaseService knowledgeBaseService;
+    private final StockExtractor stockExtractor;
 
     public StockAgent(
             ChatLanguageModel chatLanguageModel,
@@ -71,7 +73,8 @@ public class StockAgent {
             StockIndicatorTool stockIndicatorTool,
             StockCodeTool stockCodeTool,
             SessionMemory sessionMemory,
-            KnowledgeBaseService knowledgeBaseService
+            KnowledgeBaseService knowledgeBaseService,
+            StockExtractor stockExtractor
     ) {
         this.chatLanguageModel = chatLanguageModel;
         this.contentRetriever = contentRetriever;
@@ -87,6 +90,7 @@ public class StockAgent {
         this.cacheManager = cacheManager;
         this.tracer = tracer;
         this.knowledgeBaseService = knowledgeBaseService;
+        this.stockExtractor = stockExtractor;
     }
 
     /**
@@ -182,13 +186,14 @@ public class StockAgent {
      */
     private String enrichWithKnowledge(String userInput) {
         String stockCode = stockCodeTool.findStockCode(userInput);
+        StockExtractor.StockTarget target = stockExtractor.extract(userInput);
         String knowledgeContext;
 
         if (stockCode != null) {
-            knowledgeContext = knowledgeBaseService.buildKnowledgeContext(userInput, stockCode);
+            knowledgeContext = knowledgeBaseService.buildKnowledgeContext(userInput, stockCode, target);
             log.info("知识库按代码召回: stockCode={}, contextLength={}", stockCode, knowledgeContext.length());
         } else {
-            knowledgeContext = knowledgeBaseService.buildKnowledgeContext(userInput, null);
+            knowledgeContext = knowledgeBaseService.buildKnowledgeContext(userInput, null, target);
             log.info("知识库全文召回完成: contextLength={}", knowledgeContext.length());
         }
 
