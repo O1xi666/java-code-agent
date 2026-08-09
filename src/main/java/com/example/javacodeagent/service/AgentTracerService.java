@@ -5,6 +5,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.function.Supplier;
 
@@ -63,6 +65,8 @@ public class AgentTracerService {
                     "tool", toolName,
                     "durationMs", String.valueOf(duration),
                     "result", truncate(String.valueOf(result), 500));
+            ctx.toolObservations.add(new ToolObservation(
+                    toolName, truncate(args, 300), truncate(String.valueOf(result), 500)));
             return result;
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - start;
@@ -71,8 +75,18 @@ public class AgentTracerService {
                     "tool", toolName,
                     "durationMs", String.valueOf(duration),
                     "error", truncate(e.getMessage(), 300));
+            ctx.toolObservations.add(new ToolObservation(
+                    toolName, truncate(args, 300), "ERROR: " + truncate(e.getMessage(), 300)));
             throw e;
         }
+    }
+
+    /**
+     * 获取当前请求已收集的工具观测，供事实自校验使用。
+     */
+    public List<ToolObservation> getToolObservations() {
+        TraceContext ctx = contextHolder.get();
+        return ctx == null ? List.of() : List.copyOf(ctx.toolObservations);
     }
 
     /**
@@ -133,11 +147,18 @@ public class AgentTracerService {
         final String traceId;
         final long startTime;
         int toolCallCount;
+        final List<ToolObservation> toolObservations = new ArrayList<>();
 
         TraceContext(String traceId, long startTime) {
             this.traceId = traceId;
             this.startTime = startTime;
             this.toolCallCount = 0;
         }
+    }
+
+    /**
+     * 工具调用观测：工具名、入参、返回结果（失败时为错误信息）。
+     */
+    public record ToolObservation(String tool, String arguments, String result) {
     }
 }

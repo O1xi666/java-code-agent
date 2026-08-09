@@ -23,20 +23,23 @@ public class StockIndicatorTool {
     private final StockIndicatorService stockIndicatorService;
     private final StockMarketService stockMarketService;
     private final AgentTracerService tracer;
+    private final ToolExecutorSupport support;
 
     public StockIndicatorTool(StockIndicatorService stockIndicatorService,
                               StockMarketService stockMarketService,
-                              AgentTracerService tracer) {
+                              AgentTracerService tracer,
+                              ToolExecutorSupport support) {
         this.stockIndicatorService = stockIndicatorService;
         this.stockMarketService = stockMarketService;
         this.tracer = tracer;
+        this.support = support;
     }
 
     @Tool("获取股票技术指标，包括MACD、RSI、KDJ、布林带，以及趋势判断和信号")
     public String getIndicators(String secid) {
         return tracer.traceToolCall("getIndicators", secid, () -> {
             log.info("Tool 调用: getIndicators({})", secid);
-            try {
+            return support.execute("getIndicators", "secid", secid, () -> {
                 List<StockKLineVO> klineList = stockMarketService.getDailyKLine(secid, 60);
                 if (klineList.size() < 60) {
                     return "K 线数据不足（需要 60 天，当前 " + klineList.size() + " 天）";
@@ -71,10 +74,7 @@ public class StockIndicatorTool {
                 sb.append("动量状态：").append(translateMomentum(indicator.getMomentum())).append("\n");
 
                 return sb.toString();
-            } catch (Exception e) {
-                log.error("获取技术指标失败: {}", e.getMessage());
-                return "获取技术指标失败：" + e.getMessage();
-            }
+            }, e -> ToolErrors.secidError("getIndicators", secid, e, "获取技术指标"));
         });
     }
 

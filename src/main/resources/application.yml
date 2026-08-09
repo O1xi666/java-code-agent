@@ -1,6 +1,16 @@
 server:
   port: 8080
 
+agent:
+  tool:
+    max-rounds: 8
+    max-retries: 2
+    retry-base-ms: 800
+    retry-jitter-ms: 1200
+  fact-check:
+    enabled: true
+    max-rounds: 2
+
 rag:
   rerank:
     base-url: http://localhost:11434

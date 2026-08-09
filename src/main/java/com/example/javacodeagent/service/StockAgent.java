@@ -2,6 +2,8 @@ package com.example.javacodeagent.service;
 
 import com.example.javacodeagent.prompt.StockAnalysisPrompt;
 import com.example.javacodeagent.config.CachePolicy;
+import com.example.javacodeagent.config.ToolCallGuardModel;
+import com.example.javacodeagent.config.ToolCallLimitExceededException;
 import com.example.javacodeagent.rag.service.KnowledgeBaseService;
 import com.example.javacodeagent.rag.service.StockExtractor;
 import com.example.javacodeagent.tool.StockCodeTool;
@@ -9,6 +11,7 @@ import com.example.javacodeagent.tool.StockFinancialTool;
 import com.example.javacodeagent.tool.StockIndicatorTool;
 import com.example.javacodeagent.tool.StockMarketTool;
 import com.example.javacodeagent.tool.StockNewsTool;
+import com.example.javacodeagent.tool.ToolExecutorSupport;
 import com.example.javacodeagent.util.DataCacheManager;
 import com.example.javacodeagent.service.AgentTracerService;
 import dev.langchain4j.data.message.ChatMessage;
@@ -20,6 +23,7 @@ import dev.langchain4j.service.SystemMessage;
 import dev.langchain4j.service.UserMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -61,6 +65,15 @@ public class StockAgent {
     private final AgentTracerService tracer;
     private final KnowledgeBaseService knowledgeBaseService;
     private final StockExtractor stockExtractor;
+    private final ToolCallGuardModel toolCallGuardModel;
+    private final ToolExecutorSupport toolExecutorSupport;
+    private final FactCheckService factCheckService;
+
+    @Value("${agent.fact-check.enabled:true}")
+    private boolean factCheckEnabled;
+
+    @Value("${agent.fact-check.max-rounds:2}")
+    private int factCheckMaxRounds;
 
     public StockAgent(
             ChatLanguageModel chatLanguageModel,
@@ -74,7 +87,10 @@ public class StockAgent {
             StockCodeTool stockCodeTool,
             SessionMemory sessionMemory,
             KnowledgeBaseService knowledgeBaseService,
-            StockExtractor stockExtractor
+            StockExtractor stockExtractor,
+            ToolCallGuardModel toolCallGuardModel,
+            ToolExecutorSupport toolExecutorSupport,
+            FactCheckService factCheckService
     ) {
         this.chatLanguageModel = chatLanguageModel;
         this.contentRetriever = contentRetriever;
@@ -91,6 +107,9 @@ public class StockAgent {
         this.tracer = tracer;
         this.knowledgeBaseService = knowledgeBaseService;
         this.stockExtractor = stockExtractor;
+        this.toolCallGuardModel = toolCallGuardModel;
+        this.toolExecutorSupport = toolExecutorSupport;
+        this.factCheckService = factCheckService;
     }
 
     /**
@@ -130,7 +149,8 @@ public class StockAgent {
             }
 
             // ── 知识库召回增强 ──
-            String enrichedInput = enrichWithKnowledge(userInput);
+            EnrichmentResult enrichment = enrichWithKnowledge(userInput);
+            String enrichedInput = enrichment.enrichedInput();
 
             // ── 构建工作记忆：从 SessionMemory 取出最近 N 条作为推理上下文 ──
             List<ChatMessage> lastMessages = sessionMemory.getLastMessages(sessionId, INFERENCE_WINDOW);
@@ -149,20 +169,32 @@ public class StockAgent {
                     .contentRetriever(contentRetriever)
                     .tools(stockMarketTool, stockFinancialTool, stockNewsTool, stockIndicatorTool, stockCodeTool)
                     .build();
-            String result = agent.execute(enrichedInput);
 
-            // ── 持久化本轮对话到短期记忆 ──
-            sessionMemory.saveUserMessage(sessionId, enrichedInput);
-            sessionMemory.saveAssistantMessage(sessionId, result);
+            toolCallGuardModel.beginRequest();
+            toolExecutorSupport.beginRequest();
+            try {
+                String result = executeWithFactCheck(agent, enrichedInput, userInput, enrichment.knowledgeContext());
 
-            // ── 写缓存（无历史会话时可用） ──
-            if (useCache) {
-                cacheManager.put(cacheKey, result, CachePolicy.LLM_ANALYSIS);
-                log.info("LLM 分析结果已缓存: key={}", cacheKey);
+                // ── 持久化本轮对话到短期记忆 ──
+                sessionMemory.saveUserMessage(sessionId, enrichedInput);
+                sessionMemory.saveAssistantMessage(sessionId, result);
+
+                // ── 写缓存（无历史会话时可用） ──
+                if (useCache) {
+                    cacheManager.put(cacheKey, result, CachePolicy.LLM_ANALYSIS);
+                    log.info("LLM 分析结果已缓存: key={}", cacheKey);
+                }
+
+                tracer.logOutput(traceId, result.length() > 500 ? result.substring(0, 500) + "..." : result);
+                return result;
+            } catch (ToolCallLimitExceededException e) {
+                log.warn("工具调用轮数超限: {}", e.getMessage());
+                tracer.logOutput(traceId, "工具调用轮数超过上限，已停止");
+                return "分析已停止：工具调用次数超过上限，请缩小问题范围后重试。";
+            } finally {
+                toolCallGuardModel.endRequest();
+                toolExecutorSupport.endRequest();
             }
-
-            tracer.logOutput(traceId, result.length() > 500 ? result.substring(0, 500) + "..." : result);
-            return result;
         } finally {
             tracer.endTrace(traceId);
         }
@@ -184,7 +216,7 @@ public class StockAgent {
      *   <li>将召回结果格式化为【参考知识】附件拼接到用户输入前面</li>
      * </ul>
      */
-    private String enrichWithKnowledge(String userInput) {
+    private EnrichmentResult enrichWithKnowledge(String userInput) {
         String stockCode = stockCodeTool.findStockCode(userInput);
         StockExtractor.StockTarget target = stockExtractor.extract(userInput);
         String knowledgeContext;
@@ -198,14 +230,43 @@ public class StockAgent {
         }
 
         if (knowledgeContext.isBlank()) {
-            return userInput;
+            return new EnrichmentResult(userInput, knowledgeContext);
         }
 
         String prefix = knowledgeContext + "\n【用户问题】\n";
         String enriched = prefix + userInput;
 
         log.info("用户输入已增强: originalLen={}, enrichedLen={}", userInput.length(), enriched.length());
-        return enriched;
+        return new EnrichmentResult(enriched, knowledgeContext);
+    }
+
+    private String executeWithFactCheck(StockAnalysisInterface agent, String enrichedInput,
+                                        String originalInput, String knowledgeContext) {
+        String fixInstructions = "";
+        String draft = null;
+        for (int round = 1; round <= factCheckMaxRounds; round++) {
+            String prompt = fixInstructions == null || fixInstructions.isBlank()
+                    ? enrichedInput
+                    : enrichedInput + "\n\n【修正指令】\n" + fixInstructions;
+            draft = agent.execute(prompt);
+
+            if (!factCheckEnabled) {
+                return draft;
+            }
+
+            List<String> observations = tracer.getToolObservations().stream()
+                    .map(o -> o.tool() + "(" + o.arguments() + ") => " + o.result())
+                    .toList();
+            FactCheckService.FactCheckReport report = factCheckService.check(
+                    originalInput, knowledgeContext, observations, draft);
+
+            if (report.passed()) {
+                return draft;
+            }
+            log.warn("事实校验未通过（第{}轮）: {}", round, report.issues());
+            fixInstructions = report.fixInstructions();
+        }
+        return draft == null ? enrichedInput : draft;
     }
 
     @SystemMessage(StockAnalysisPrompt.SYSTEM_PROMPT)
@@ -222,5 +283,8 @@ public class StockAgent {
         if (userInput == null || userInput.isBlank()) return null;
         String code = stockCodeTool.findStockCode(userInput);
         return code != null ? "llm:analysis:" + code : null;
+    }
+
+    private record EnrichmentResult(String enrichedInput, String knowledgeContext) {
     }
 }

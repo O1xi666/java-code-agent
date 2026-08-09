@@ -11,7 +11,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
-import java.util.Random;
 
 /**
  * 股票行情工具：LLM 可调用的实时行情 / K 线 / 均线查询
@@ -30,8 +29,6 @@ import java.util.Random;
 public class StockMarketTool {
 
     private static final Logger log = LoggerFactory.getLogger(StockMarketTool.class);
-    private static final int TOOL_MAX_RETRIES = 3;
-    private static final Random TOOL_RETRY_RANDOM = new Random();
 
     /** 将股票名称或代码统一为标准 secid 格式 */
     private String resolveSecid(String input) {
@@ -55,11 +52,14 @@ public class StockMarketTool {
     private final StockMarketService stockMarketService;
     private final StockCodeTool stockCodeTool;
     private final AgentTracerService tracer;
+    private final ToolExecutorSupport support;
 
-    public StockMarketTool(StockMarketService stockMarketService, StockCodeTool stockCodeTool, AgentTracerService tracer) {
+    public StockMarketTool(StockMarketService stockMarketService, StockCodeTool stockCodeTool,
+                           AgentTracerService tracer, ToolExecutorSupport support) {
         this.stockMarketService = stockMarketService;
         this.stockCodeTool = stockCodeTool;
         this.tracer = tracer;
+        this.support = support;
     }
 
     /**
@@ -73,34 +73,23 @@ public class StockMarketTool {
         return tracer.traceToolCall("getQuote", secid, () -> {
             String resolved = resolveSecid(secid);
             log.info("Tool 调用: getQuote({})", resolved);
-            Exception lastEx = null;
-            for (int at = 1; at <= TOOL_MAX_RETRIES; at++) {
-                try {
-                    StockQuoteVO quote = stockMarketService.getQuote(resolved);
-                    return String.format("""
-                            股票：%s (%s)
-                            最新价：%.2f
-                            开盘价：%.2f
+            return support.execute("getQuote", "secid", secid, () -> {
+                StockQuoteVO quote = stockMarketService.getQuote(resolved);
+                return String.format("""
+                        股票：%s (%s)
+                        最新价：%.2f
+                        开盘价：%.2f
                             最高价：%.2f | 最低价：%.2f
                             涨跌幅：%.2f%%
                             成交量：%d 手
                             """,
                             quote.getName(), quote.getCode(),
                             quote.getPrice(), quote.getOpen(),
-                            quote.getHigh(), quote.getLow(),
-                            quote.getChange(),
-                            quote.getVolume()
-                    );
-                } catch (Exception e) {
-                    lastEx = e;
-                    if (at < TOOL_MAX_RETRIES) {
-                        int delayMs = 1000 + TOOL_RETRY_RANDOM.nextInt(2001);
-                        try { Thread.sleep(delayMs); } catch (InterruptedException ignored) {}
-                    }
-                }
-            }
-            log.error("获取行情失败（已重试{}次）: {}", TOOL_MAX_RETRIES, lastEx.getMessage());
-            return "获取行情临时失败，已自动重试" + TOOL_MAX_RETRIES + "次，请稍后重新分析（" + lastEx.getMessage() + "）";
+                        quote.getHigh(), quote.getLow(),
+                        quote.getChange(),
+                        quote.getVolume()
+                );
+            }, e -> ToolErrors.secidError("getQuote", secid, e, "获取实时行情"));
         });
     }
 

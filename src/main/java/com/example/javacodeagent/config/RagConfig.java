@@ -13,6 +13,7 @@ import com.example.javacodeagent.rag.service.HybridSearchService;
 import com.example.javacodeagent.rag.util.BM25Searcher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -30,13 +31,17 @@ public class RagConfig {
 
     private static final String VECTOR_STORE_FILE = "rag-vector-index/vector-store.json";
 
+    @Value("${agent.tool.max-rounds:8}")
+    private int maxToolRounds;
+
     @Bean
-    public OllamaChatModel ollamaChatModel() {
-        return OllamaChatModel.builder()
+    public ToolCallGuardModel ollamaChatModel() {
+        OllamaChatModel raw = OllamaChatModel.builder()
                 .baseUrl("http://localhost:11434")
                 .modelName("qwen3:8b")
                 .temperature(0.0)
                 .build();
+        return new ToolCallGuardModel(raw, maxToolRounds);
     }
 
     @Bean

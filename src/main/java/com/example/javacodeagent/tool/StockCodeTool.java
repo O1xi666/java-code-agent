@@ -29,13 +29,16 @@ public class StockCodeTool {
 
     private final AgentTracerService tracer;
     private final WatchlistRepository watchlistRepository;
+    private final ToolExecutorSupport support;
 
     private final Map<String, String> stockMap = new HashMap<>();
     private final Random random = new Random();
 
-    public StockCodeTool(AgentTracerService tracer, WatchlistRepository watchlistRepository) {
+    public StockCodeTool(AgentTracerService tracer, WatchlistRepository watchlistRepository,
+                         ToolExecutorSupport support) {
         this.tracer = tracer;
         this.watchlistRepository = watchlistRepository;
+        this.support = support;
         initDefaultStocks();
     }
 
@@ -94,24 +97,23 @@ public class StockCodeTool {
     public String resolveCode(String stockName) {
         return tracer.traceToolCall("resolveCode", stockName, () -> {
             log.info("Tool 调用: resolveCode({})", stockName);
-        // 1. 精确匹配内存映射
-        String code = stockMap.get(stockName);
-        if (code != null) {
-            return String.format("股票 %s 的代码是 %s", stockName, code);
-        }
-        // 2. 部分匹配内存映射
-        for (Map.Entry<String, String> entry : stockMap.entrySet()) {
-            if (entry.getKey().contains(stockName) || stockName.contains(entry.getKey())) {
-                return String.format("股票 %s 的代码是 %s（匹配到: %s）", stockName, entry.getValue(), entry.getKey());
-            }
-        }
-        // 3. 兜底：查自选股数据库（处理运行时新增的自选股）
-        code = lookupStockFromDb(stockName);
-        if (code != null) {
-            stockMap.put(stockName, code);
-            return String.format("股票 %s 的代码是 %s", stockName, code);
-        }
-        return String.format("未找到股票 %s 的代码，请确认股票名称是否正确", stockName);
+            return support.execute("resolveCode", "stockName", stockName, () -> {
+                String code = stockMap.get(stockName);
+                if (code != null) {
+                    return String.format("股票 %s 的代码是 %s", stockName, code);
+                }
+                for (Map.Entry<String, String> entry : stockMap.entrySet()) {
+                    if (entry.getKey().contains(stockName) || stockName.contains(entry.getKey())) {
+                        return String.format("股票 %s 的代码是 %s（匹配到: %s）", stockName, entry.getValue(), entry.getKey());
+                    }
+                }
+                code = lookupStockFromDb(stockName);
+                if (code != null) {
+                    stockMap.put(stockName, code);
+                    return String.format("股票 %s 的代码是 %s", stockName, code);
+                }
+                return String.format("未找到股票 %s 的代码，请确认股票名称是否正确", stockName);
+            }, e -> ToolErrors.nameError("resolveCode", stockName, e));
         });
     }
 
