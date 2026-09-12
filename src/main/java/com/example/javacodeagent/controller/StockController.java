@@ -1,11 +1,15 @@
 package com.example.javacodeagent.controller;
 
+import com.example.javacodeagent.model.WatchlistStock;
 import com.example.javacodeagent.service.StockAgent;
 import com.example.javacodeagent.service.StockMarketService;
 import com.example.javacodeagent.service.StockNewsService;
+import com.example.javacodeagent.service.WatchlistService;
 import com.example.javacodeagent.vo.StockKLineVO;
 import com.example.javacodeagent.vo.StockNewsVO;
 import com.example.javacodeagent.vo.StockQuoteVO;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.http.MediaType;
 import reactor.core.publisher.Flux;
@@ -32,9 +36,12 @@ import java.util.Map;
 @RequestMapping("/api/stock")
 public class StockController {
 
+    private static final Logger log = LoggerFactory.getLogger(StockController.class);
+
     private final StockAgent stockAgent;
     private final StockMarketService stockMarketService;
     private final StockNewsService stockNewsService;
+    private final WatchlistService watchlistService;
 
     // 默认自选股列表（用户可以自行修改）
     private static final List<String> DEFAULT_WATCHLIST = List.of(
@@ -49,10 +56,11 @@ public class StockController {
     );
 
     public StockController(StockAgent stockAgent, StockMarketService stockMarketService,
-                           StockNewsService stockNewsService) {
+                           StockNewsService stockNewsService, WatchlistService watchlistService) {
         this.stockAgent = stockAgent;
         this.stockMarketService = stockMarketService;
         this.stockNewsService = stockNewsService;
+        this.watchlistService = watchlistService;
     }
 
     /**
@@ -88,14 +96,15 @@ public class StockController {
      * 不经过 LLM，直接调用 Service 层获取实时数据并生成结构化报告。
      * 这样生成速度快，且不受 LLM 可用性影响。
      *
-     * @param stockCodes 可选，自选股代码列表，用逗号分隔。为空时使用默认列表
+     * @param stockCodes 可选，股票代码列表，用逗号分隔。为空时优先使用用户在自选股表中维护的标的，
+     *                   自选股为空或读取异常时回退到内置默认列表
      * @return 每日早报，包含每只股票的行情、涨跌幅和新闻摘要
      */
     @PostMapping("/daily-report")
     public Map<String, Object> dailyReport(
             @RequestParam(value = "codes", required = false, defaultValue = "") String stockCodes
     ) {
-        List<String> codes = stockCodes.isBlank() ? DEFAULT_WATCHLIST : List.of(stockCodes.split(","));
+        List<String> codes = stockCodes.isBlank() ? resolveWatchlistCodes() : List.of(stockCodes.split(","));
         LocalDate today = LocalDate.now();
 
         Map<String, Object> report = new LinkedHashMap<>();
@@ -152,5 +161,44 @@ public class StockController {
         report.put("stocks", stockList);
 
         return report;
+    }
+
+    /**
+     * 解析默认股票代码列表：优先使用用户自选股，自选股为空或读取异常时回退默认列表
+     */
+    private List<String> resolveWatchlistCodes() {
+        try {
+            List<WatchlistStock> watchlist = watchlistService.listAll();
+            if (watchlist != null && !watchlist.isEmpty()) {
+                List<String> codes = new ArrayList<>();
+                for (WatchlistStock stock : watchlist) {
+                    String secid = toSecid(stock.getStockCode());
+                    if (secid != null) {
+                        codes.add(secid);
+                    }
+                }
+                if (!codes.isEmpty()) {
+                    log.info("日报使用用户自选股，共 {} 只", codes.size());
+                    return codes;
+                }
+            }
+            log.info("用户自选股为空，日报回退默认列表");
+        } catch (Exception e) {
+            log.warn("读取用户自选股失败，日报回退默认列表: {}", e.getMessage());
+        }
+        return DEFAULT_WATCHLIST;
+    }
+
+    /**
+     * 将 6 位股票代码标准化为 secid（6 开头为上海 1.，其余为深圳 0.）
+     */
+    private String toSecid(String stockCode) {
+        if (stockCode == null || stockCode.isBlank()) return null;
+        String code = stockCode.trim();
+        if (code.contains(".")) return code;
+        if (code.matches("\\d{6}")) {
+            return code.startsWith("6") ? "1." + code : "0." + code;
+        }
+        return code;
     }
 }

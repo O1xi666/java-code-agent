@@ -3,6 +3,7 @@ package com.example.javacodeagent.controller;
 import com.example.javacodeagent.service.StockAgent;
 import com.example.javacodeagent.service.StockMarketService;
 import com.example.javacodeagent.service.StockNewsService;
+import com.example.javacodeagent.service.WatchlistService;
 import com.example.javacodeagent.vo.StockQuoteVO;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,6 +32,9 @@ class StockControllerIntegrationTest {
 
     @MockBean
     private StockNewsService stockNewsService;
+
+    @MockBean
+    private WatchlistService watchlistService;
 
     @Test
     void testDailyReport_WithDefaultWatchlist() throws Exception {

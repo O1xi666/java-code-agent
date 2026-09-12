@@ -50,8 +50,15 @@ class StockIndicatorServiceTest {
 
     @Test
     void testCalculateAll_InsufficientData() {
+        // 数据不足（< 34 根 K 线）时 calculateAll 不抛异常，而是返回空 VO，
+        // 由调用方（MonitoringService / StockIndicatorTool）按 size 自行降级，
+        // 这样上层可以统一处理"数据不足"而不用依赖异常控制流程。
         List<StockKLineVO> klineList = generateKLineData(10, 100.0, 0.0);
-        assertThrows(IllegalArgumentException.class, () -> indicatorService.calculateAll(klineList));
+        StockIndicatorVO vo = indicatorService.calculateAll(klineList);
+        assertNotNull(vo);
+        assertNull(vo.getMacdLine(), "数据不足时不应计算 MACD");
+        assertNull(vo.getRsi6(), "数据不足时不应计算 RSI");
+        assertNull(vo.getkValue(), "数据不足时不应计算 KDJ");
     }
 
     @Test

@@ -58,7 +58,8 @@ class SimHashTest {
         long fp1 = SimHash.compute(t1);
         long fp2 = SimHash.compute(t2);
         int dist = SimHash.hammingDistance(fp1, fp2);
-        assertTrue(dist <= 6,
+        // 断言语义而非魔数：近义改写文本应当被判为重复
+        assertTrue(SimHash.isDuplicate(fp1, fp2),
                 "更长近义文本应在阈值内, 汉明距离=" + dist);
     }
 }

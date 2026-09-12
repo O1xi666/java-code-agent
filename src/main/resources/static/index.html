@@ -117,6 +117,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
     <button id="tab1-btn" class="active" onclick="switchTab(1)">📈 股票分析</button>
     <button id="tab2-btn" onclick="switchTab(2)">📚 知识管理</button>
     <button id="tab3-btn" onclick="switchTab(3)">⭐ 自选股</button>
+    <button id="tab4-btn" onclick="switchTab(4)">🚨 异动监控</button>
   </div>
 
   <!-- Tab 1: 股票分析 -->
@@ -258,6 +259,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
     document.getElementById('tab' + n + '-content').classList.add('active');
     if (n === 2) { refreshKbStats(); loadGeneralRules(); }
     if (n === 3) { loadWatchlist(); }
+    if (n === 4) { loadMonitorStockList(); openMonitorStream(); }
+    else { closeMonitorStream(); }
   }
 
   // ═══════════════════════════════════════════
@@ -540,6 +543,102 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
         hint.innerHTML = '⭐ 自选: ' + data.list.map(s => '<button onclick="quickAnalyze(\'' + s.stockName + '\')" style="padding:2px 8px;border:1px solid #e0e0e0;border-radius:10px;background:white;cursor:pointer;font-size:11px;margin:0 2px;">' + escHtml(s.stockName) + '</button>').join('');
       }
     } catch (e) {}
+  }
+
+  // ═══════════════════════════════════════════
+  // Tab4: 异动监控
+  // ═══════════════════════════════════════════
+  let monitorSource = null;
+
+  function setMonitorStatus(text, color) {
+    const el = document.getElementById('monitorStatus');
+    el.textContent = text;
+    el.style.color = color || '#999';
+  }
+
+  function openMonitorStream() {
+    if (monitorSource) { setMonitorStatus('已连接，实时推送中', '#27ae60'); return; }
+    setMonitorStatus('连接中...', '#f39c12');
+    try {
+      monitorSource = new EventSource(API + '/api/monitor/alerts/stream');
+    } catch (e) {
+      monitorSource = null;
+      setMonitorStatus('连接失败', '#e74c3c');
+      return;
+    }
+    monitorSource.onopen = function() {
+      setMonitorStatus('已连接，实时推送中', '#27ae60');
+    };
+    monitorSource.onmessage = function(ev) {
+      setMonitorStatus('已连接，实时推送中', '#27ae60');
+      let data;
+      try { data = JSON.parse(ev.data); } catch (e) { return; }
+      if (data.type === 'alerts') {
+        renderMonitorAlerts(data.list || [], data.count || 0);
+      }
+    };
+    monitorSource.onerror = function() {
+      setMonitorStatus('连接已断开，正在重连', '#e74c3c');
+    };
+  }
+
+  function closeMonitorStream() {
+    if (monitorSource) {
+      monitorSource.close();
+      monitorSource = null;
+      setMonitorStatus('状态：未连接', '#999');
+    }
+  }
+
+  function renderMonitorAlerts(list, count) {
+    const wrap = document.getElementById('alertList');
+    document.getElementById('alertCount').textContent = count;
+    if (!list || list.length === 0) {
+      wrap.innerHTML = '<div class="empty-state">暂无预警</div>';
+      return;
+    }
+    let html = '';
+    for (let i = list.length - 1; i >= 0; i--) {
+      const a = list[i];
+      html += '<div class="alert-item">' +
+        '<div class="alert-title">' + escHtml(a.stockName || a.stockCode || '') + '</div>' +
+        '<div class="alert-msg">' + escHtml(a.message || '') + '</div>' +
+        '<div class="alert-time">' + escHtml(a.time || '') + '</div>' +
+      '</div>';
+    }
+    wrap.innerHTML = html;
+  }
+
+  async function clearMonitorAlerts() {
+    try {
+      const res = await fetch(API + '/api/monitor/alerts', { method: 'DELETE' });
+      const data = await res.json();
+      document.getElementById('alertList').innerHTML = '<div class="empty-state">暂无预警</div>';
+      document.getElementById('alertCount').textContent = '0';
+      alert(data.message || '预警已清除');
+    } catch (e) {
+      alert('清除失败: ' + e.message);
+    }
+  }
+
+  async function loadMonitorStockList() {
+    const wrap = document.getElementById('monitorStockList');
+    try {
+      const res = await fetch(API + '/api/watchlist/list');
+      const data = await res.json();
+      if (!data.success || data.count === 0) {
+        wrap.innerHTML = '<div class="empty-state">暂无自选股，请先在「自选股」中添加</div>';
+        return;
+      }
+      wrap.innerHTML = data.list.map(s =>
+        '<div class="monitor-stock-item">' +
+          '<span class="ms-name">' + escHtml(s.stockName) + '</span>' +
+          '<span style="font-size:12px;color:#888;">' + escHtml(s.stockCode) + '</span>' +
+        '</div>'
+      ).join('');
+    } catch (e) {
+      wrap.innerHTML = '<div class="empty-state" style="color:#e74c3c;">加载失败: ' + e.message + '</div>';
+    }
   }
 
   // 初始化

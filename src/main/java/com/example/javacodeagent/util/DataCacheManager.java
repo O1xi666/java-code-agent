@@ -3,12 +3,15 @@ package com.example.javacodeagent.util;
 import com.example.javacodeagent.config.CachePolicy;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.stats.CacheStats;
 import jakarta.annotation.Resource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
@@ -110,6 +113,20 @@ public class DataCacheManager {
         try {
             redisTemplate.delete(key);
         } catch (Exception ignored) {}
+    }
+
+    /**
+     * 只读暴露 L1 Caffeine 的命中统计，供诊断/评测使用；不改变任何缓存行为
+     */
+    public Map<String, Object> stats() {
+        CacheStats cacheStats = localCache.stats();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("hitCount", cacheStats.hitCount());
+        result.put("missCount", cacheStats.missCount());
+        result.put("hitRate", cacheStats.hitRate());
+        result.put("evictionCount", cacheStats.evictionCount());
+        result.put("estimatedSize", localCache.estimatedSize());
+        return result;
     }
 
     /**

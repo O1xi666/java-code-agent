@@ -1,82 +1,98 @@
 package com.example.javacodeagent.service;
 
-import dev.langchain4j.data.message.AiMessage;
-import dev.langchain4j.data.message.ChatMessage;
-import dev.langchain4j.data.message.UserMessage;
-import jakarta.annotation.Resource;
-import org.springframework.data.redis.core.RedisTemplate;
+import com.example.javacodeagent.memory.DynamicTokenWindow;
+import com.example.javacodeagent.memory.ImportanceScorer;
+import com.example.javacodeagent.memory.MemoryJsonUtil;
+import com.example.javacodeagent.memory.MemoryRecord;
+import com.example.javacodeagent.memory.MemoryStore;
+import com.example.javacodeagent.memory.MemoryTokenizer;
+import com.fasterxml.jackson.core.type.TypeReference;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 
 /**
- * 短期记忆（会话级）
+ * 短期记忆（三级记忆体系的「会话层」）。
  *
- * <p>存储单会话全量对话历史，不设上限。
- * 7 天 TTL，匹配用户"过几天回来继续同一会话"的需求。
+ * <p>职责边界：本类只负责"存"和"打分"，不负责决定"哪些进上下文"——
+ * 窗口裁剪交给 {@link DynamicTokenWindow}，编排交给 {@link AgentMemoryService}，
+ * 这样每一层都能被单独测试。
  *
- * <p>推理窗口大小在 {@link StockAgent} 中通过
- * {@link #getLastMessages(String, int)} 控制，不做存储级裁剪。
+ * <p>相比早期"存储全量对话、推理时固定取最近 N 条"的实现，这里做了两件事：
+ * <ol>
+ *   <li>写入时给每条消息打重要性分并标记噪声（工具报错/重试/重复调用/中间态），
+ *       噪声照常留档以便排查，但不会进入推理上下文；</li>
+ *   <li>落库时记录 token 数，让动态 Token 窗口可以按真实预算裁剪而不是按条数。</li>
+ * </ol>
+ *
+ * <p>会话历史保留 7 天，匹配用户"过几天回来继续同一会话"的使用习惯。
  */
 @Component
 public class SessionMemory {
 
-    @Resource
-    private RedisTemplate<String, Object> redisTemplate;
+    private static final Logger log = LoggerFactory.getLogger(SessionMemory.class);
 
     private static final String KEY_PREFIX = "session:memory:";
-    private static final long TTL_DAYS = 7;
+    private static final Duration TTL = Duration.ofDays(7);
+    /** 单会话最多留档的记录数，防止 Redis 无限增长 */
+    private static final int MAX_RECORDS = 200;
 
-    /**
-     * 获取最近的 N 条消息（用于构建工作记忆的推理窗口）。
-     */
-    @SuppressWarnings("unchecked")
-    public List<ChatMessage> getLastMessages(String sessionId, int count) {
-        String key = KEY_PREFIX + sessionId;
-        try {
-            List<ChatMessage> all = (List<ChatMessage>) redisTemplate.opsForValue().get(key);
-            if (all == null || all.isEmpty()) return List.of();
-            int from = Math.max(0, all.size() - count);
-            return all.subList(from, all.size());
-        } catch (Exception e) {
-            return List.of();
-        }
+    private final MemoryStore store;
+
+    public SessionMemory(MemoryStore store) {
+        this.store = store;
+    }
+
+    /** 读取会话全部留档记录（含被标记的噪声） */
+    public List<MemoryRecord> load(String sessionId) {
+        List<MemoryRecord> records = MemoryJsonUtil.read(store.get(key(sessionId)),
+                new TypeReference<ArrayList<MemoryRecord>>() {
+                });
+        return records == null ? new ArrayList<>() : records;
     }
 
     /**
-     * 持久化一条消息到全量会话历史。
+     * 记录一条消息：先打分、再计 token、最后落库。
+     *
+     * @return 生成的记忆记录（含重要性、token 数、噪声标记），便于调用方打日志
      */
-    @SuppressWarnings("unchecked")
-    public void addMessage(String sessionId, ChatMessage message) {
-        String key = KEY_PREFIX + sessionId;
-        try {
-            List<ChatMessage> all = (List<ChatMessage>) redisTemplate.opsForValue().get(key);
-            if (all == null) {
-                all = new ArrayList<>();
-            }
-            all.add(message);
-            redisTemplate.opsForValue().set(key, all);
-            redisTemplate.expire(key, TTL_DAYS, TimeUnit.DAYS);
-        } catch (Exception e) {
-            System.err.println("SessionMemory 保存失败: " + e.getMessage());
+    public MemoryRecord record(String sessionId, String role, String content) {
+        ImportanceScorer.Scored scored = ImportanceScorer.score(role, content);
+        MemoryRecord record = MemoryRecord.of(sessionId, role, content, scored.kind(),
+                scored.importance(), MemoryTokenizer.count(content), scored.noise(), scored.reason());
+
+        List<MemoryRecord> records = load(sessionId);
+        records.add(record);
+        while (records.size() > MAX_RECORDS) {
+            records.remove(0);
         }
+        store.put(key(sessionId), MemoryJsonUtil.write(records), TTL);
+        return record;
     }
 
     public void saveUserMessage(String sessionId, String content) {
-        addMessage(sessionId, new UserMessage(content));
+        record(sessionId, "user", content);
     }
 
     public void saveAssistantMessage(String sessionId, String content) {
-        addMessage(sessionId, new AiMessage(content));
+        record(sessionId, "assistant", content);
+    }
+
+    /** 会话是否已有历史（用于决定能否命中 LLM 结果缓存） */
+    public boolean hasSession(String sessionId) {
+        return !load(sessionId).isEmpty();
     }
 
     public void clear(String sessionId) {
-        redisTemplate.delete(KEY_PREFIX + sessionId);
+        store.remove(key(sessionId));
+        log.info("会话记忆已清空: session={}", sessionId);
     }
 
-    public boolean hasSession(String sessionId) {
-        return Boolean.TRUE.equals(redisTemplate.hasKey(KEY_PREFIX + sessionId));
+    private static String key(String sessionId) {
+        return KEY_PREFIX + (sessionId == null || sessionId.isBlank() ? "default-session" : sessionId);
     }
 }

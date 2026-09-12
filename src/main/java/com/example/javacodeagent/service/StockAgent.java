@@ -13,7 +13,6 @@ import com.example.javacodeagent.tool.StockMarketTool;
 import com.example.javacodeagent.tool.StockNewsTool;
 import com.example.javacodeagent.tool.ToolExecutorSupport;
 import com.example.javacodeagent.util.DataCacheManager;
-import com.example.javacodeagent.service.AgentTracerService;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatLanguageModel;
@@ -34,24 +33,34 @@ import java.util.List;
 /**
  * 股票分析 Agent
  *
- * <p>在 LLM 分析之前，自动从知识库（KnowledgeBaseService）召回升与该股票相关的投研知识片段，
+ * <p>在 LLM 分析之前，自动从知识库（KnowledgeBaseService）召回与该股票相关的投研知识片段，
  * 以【参考知识】形式嵌入用户输入，LLM 回答时需基于这些知识并标注引用来源，
  * 从而降低幻觉，提高分析的可溯源性。
  *
- * <p><b>记忆架构</b>：
+ * <p><b>记忆架构（三级）</b>：由 {@link AgentMemoryService} 统一编排
  * <ul>
- *   <li>短期记忆（会话级）：{@link SessionMemory}，Redis 存储全量对话历史，7 天 TTL</li>
- *   <li>工作记忆附属缓存：{@link com.example.javacodeagent.rag.util.RetrievalContextCache}，RAG 上下文按数据类型 TTL</li>
- *   <li>工作记忆：每次请求动态构建（系统 Prompt + 最近 {@value #INFERENCE_WINDOW} 条对话 + 当轮 RAG 结果），请求结束时释放</li>
+ *   <li>会话层：{@link SessionMemory}，Redis 留档 + 重要性打分 + 动态 Token 窗口裁剪，过滤无效交互</li>
+ *   <li>用户画像层：{@code UserProfileMemory}，结构化 KV + 偏好冲突校验与确认更新</li>
+ *   <li>历史结论层：{@code ConclusionMemory}，写入准入 + 失效标记 + 归档治理</li>
  * </ul>
+ *
+ * <p><b>工具调用</b>：LangChain4j AiServices 以 Function Calling 的方式驱动 5 个业务工具，
+ * 形成"推理 → 调用工具 → 观察结果 → 继续推理"的多轮循环（ReAct 的工程化落地形态），
+ * 支持单工具调用与多工具串行组合的自主决策；工具异常以结构化错误回传给模型引导修正重试，
+ * 并由 {@link ToolCallGuardModel} 限制最大调用轮数，避免无限循环。
  */
 @Component
 public class StockAgent {
 
     private static final Logger log = LoggerFactory.getLogger(StockAgent.class);
 
-    /** 每次推理最多载入的对话轮数 */
-    static final int INFERENCE_WINDOW = 15;
+    /**
+     * 工作记忆的消息条数安全上限。
+     *
+     * <p>真正的上下文裁剪由三级记忆里的动态 Token 窗口完成，这里只是一道兜底闸门，
+     * 防止异常情况下消息条数失控。
+     */
+    static final int INFERENCE_WINDOW = 40;
 
     private final ChatLanguageModel chatLanguageModel;
     private final ContentRetriever contentRetriever;
@@ -68,6 +77,7 @@ public class StockAgent {
     private final ToolCallGuardModel toolCallGuardModel;
     private final ToolExecutorSupport toolExecutorSupport;
     private final FactCheckService factCheckService;
+    private final AgentMemoryService agentMemoryService;
 
     @Value("${agent.fact-check.enabled:true}")
     private boolean factCheckEnabled;
@@ -90,7 +100,8 @@ public class StockAgent {
             StockExtractor stockExtractor,
             ToolCallGuardModel toolCallGuardModel,
             ToolExecutorSupport toolExecutorSupport,
-            FactCheckService factCheckService
+            FactCheckService factCheckService,
+            AgentMemoryService agentMemoryService
     ) {
         this.chatLanguageModel = chatLanguageModel;
         this.contentRetriever = contentRetriever;
@@ -110,35 +121,41 @@ public class StockAgent {
         this.toolCallGuardModel = toolCallGuardModel;
         this.toolExecutorSupport = toolExecutorSupport;
         this.factCheckService = factCheckService;
+        this.agentMemoryService = agentMemoryService;
     }
 
     /**
-     * 分析股票（含知识库召回增强）。
+     * 分析股票（含知识库召回增强 + 三级记忆）。
      *
-     * <p>记忆流程：
+     * <p>处理流程：
      * <ol>
-     *   <li>判断缓存命中（仅无历史会话时使用 LLM 结果缓存）</li>
-     *   <li>从知识库召回相关片段 → enrich 用户输入</li>
-     *   <li>从 {@link SessionMemory} 加载最近 {@value #INFERENCE_WINDOW} 条历史消息</li>
-     *   <li>创建临时工作记忆（MessageWindowChatMemory），填入历史</li>
+     *   <li>用户画像层：处理偏好确认/否决，抽取新的长期偏好</li>
+     *   <li>缓存检查（仅无历史会话的单轮查询才走 LLM 结果缓存）</li>
+     *   <li>知识库召回相关片段</li>
+     *   <li>三级记忆组装：会话窗口（动态 Token 预算）+ 用户画像 + 历史结论</li>
      *   <li>调用 LLM（AiServices 自动将新用户消息和回复加入工作记忆）</li>
-     *   <li>将本轮的输入和回复持久化到 SessionMemory</li>
+     *   <li>事实一致性自校验，未通过则带修正指令重生成</li>
+     *   <li>回写会话层与历史结论层</li>
      * </ol>
      */
     public String analyze(String userInput, String sessionId) {
         log.info("Agent 分析请求: sessionId={}, input={}", sessionId, userInput);
 
+        // 个人项目里以会话 ID 作为用户标识；接入登录体系后替换为真实 userId 即可
+        String userId = sessionId;
         String traceId = tracer.startTrace(sessionId, userInput);
 
         try {
-            // ── 缓存检查 ──
-            String cacheKey = buildAnalyzeCacheKey(userInput);
-            boolean useCache = cacheKey != null;
-            if (useCache) {
-                try {
-                    if (sessionMemory.hasSession(sessionId)) useCache = false;
-                } catch (Exception ignored) {}
-            }
+            String stockCode = stockCodeTool.findStockCode(userInput);
+            StockExtractor.StockTarget target = stockExtractor.extract(userInput);
+            String stockName = target == null ? null : target.targetName();
+
+            // ── 用户画像层：偏好确认/否决 + 新偏好抽取 ──
+            String memorySignals = agentMemoryService.handleUserSignals(userId, userInput);
+
+            // ── 缓存检查：有历史会话时结果依赖上下文，不能复用缓存 ──
+            String cacheKey = stockCode == null ? null : "llm:analysis:" + stockCode;
+            boolean useCache = cacheKey != null && !sessionMemory.hasSession(sessionId);
             if (useCache) {
                 String cached = cacheManager.getIfPresent(cacheKey);
                 if (cached != null) {
@@ -148,17 +165,19 @@ public class StockAgent {
                 }
             }
 
-            // ── 知识库召回增强 ──
-            EnrichmentResult enrichment = enrichWithKnowledge(userInput);
-            String enrichedInput = enrichment.enrichedInput();
+            // ── 知识库召回 ──
+            EnrichmentResult enrichment = enrichWithKnowledge(userInput, stockCode, target);
 
-            // ── 构建工作记忆：从 SessionMemory 取出最近 N 条作为推理上下文 ──
-            List<ChatMessage> lastMessages = sessionMemory.getLastMessages(sessionId, INFERENCE_WINDOW);
+            // ── 三级记忆组装 ──
+            AgentMemoryService.MemoryContext memory =
+                    agentMemoryService.buildContext(userId, sessionId, stockCode);
+            String enrichedInput = buildEnrichedInput(memory, enrichment, userInput, memorySignals);
+
             MessageWindowChatMemory workingMemory = MessageWindowChatMemory.builder()
                     .maxMessages(INFERENCE_WINDOW)
                     .id(sessionId)
                     .build();
-            for (ChatMessage msg : lastMessages) {
+            for (ChatMessage msg : memory.chatMessages()) {
                 workingMemory.add(msg);
             }
 
@@ -173,13 +192,16 @@ public class StockAgent {
             toolCallGuardModel.beginRequest();
             toolExecutorSupport.beginRequest();
             try {
-                String result = executeWithFactCheck(agent, enrichedInput, userInput, enrichment.knowledgeContext());
+                AnalysisResult analysisResult =
+                        executeWithFactCheck(agent, enrichedInput, userInput, enrichment.knowledgeContext());
+                String result = analysisResult.answer();
 
-                // ── 持久化本轮对话到短期记忆 ──
-                sessionMemory.saveUserMessage(sessionId, enrichedInput);
-                sessionMemory.saveAssistantMessage(sessionId, result);
+                // ── 回写三级记忆：会话层存"用户原始问题"而非增强后的输入 ──
+                // 增强输入里包含知识库全文，若原样入库会在后续每轮重复膨胀上下文
+                agentMemoryService.recordTurn(userId, sessionId, userInput, result,
+                        analysisResult.factChecked(), tracer.getToolObservations().size(),
+                        stockCode, stockName);
 
-                // ── 写缓存（无历史会话时可用） ──
                 if (useCache) {
                     cacheManager.put(cacheKey, result, CachePolicy.LLM_ANALYSIS);
                     log.info("LLM 分析结果已缓存: key={}", cacheKey);
@@ -210,38 +232,50 @@ public class StockAgent {
      *
      * <p>策略：
      * <ul>
-     *   <li>先用 stockCodeTool 提取股票代码</li>
-     *   <li>若有代码，按代码过滤检索知识库（更精确）</li>
-     *   <li>若无代码，按用户输入全文语义检索（模糊匹配）</li>
-     *   <li>将召回结果格式化为【参考知识】附件拼接到用户输入前面</li>
+     *   <li>有股票代码时按代码过滤检索知识库（更精确）</li>
+     *   <li>无代码时按用户输入全文语义检索（模糊匹配）</li>
+     *   <li>召回结果格式化为【参考知识】附件，由 {@link #buildEnrichedInput} 统一拼接</li>
      * </ul>
      */
-    private EnrichmentResult enrichWithKnowledge(String userInput) {
-        String stockCode = stockCodeTool.findStockCode(userInput);
-        StockExtractor.StockTarget target = stockExtractor.extract(userInput);
-        String knowledgeContext;
-
-        if (stockCode != null) {
-            knowledgeContext = knowledgeBaseService.buildKnowledgeContext(userInput, stockCode, target);
-            log.info("知识库按代码召回: stockCode={}, contextLength={}", stockCode, knowledgeContext.length());
-        } else {
-            knowledgeContext = knowledgeBaseService.buildKnowledgeContext(userInput, null, target);
-            log.info("知识库全文召回完成: contextLength={}", knowledgeContext.length());
-        }
-
-        if (knowledgeContext.isBlank()) {
-            return new EnrichmentResult(userInput, knowledgeContext);
-        }
-
-        String prefix = knowledgeContext + "\n【用户问题】\n";
-        String enriched = prefix + userInput;
-
-        log.info("用户输入已增强: originalLen={}, enrichedLen={}", userInput.length(), enriched.length());
-        return new EnrichmentResult(enriched, knowledgeContext);
+    private EnrichmentResult enrichWithKnowledge(String userInput, String stockCode,
+                                                 StockExtractor.StockTarget target) {
+        String knowledgeContext = stockCode != null
+                ? knowledgeBaseService.buildKnowledgeContext(userInput, stockCode, target)
+                : knowledgeBaseService.buildKnowledgeContext(userInput, null, target);
+        log.info("知识库召回完成: stockCode={}, contextLength={}", stockCode, knowledgeContext.length());
+        return new EnrichmentResult(knowledgeContext);
     }
 
-    private String executeWithFactCheck(StockAnalysisInterface agent, String enrichedInput,
-                                        String originalInput, String knowledgeContext) {
+    /**
+     * 组装最终送入模型的用户输入：三级记忆区块 → 参考知识 → 记忆信号 → 用户问题。
+     */
+    private String buildEnrichedInput(AgentMemoryService.MemoryContext memory, EnrichmentResult enrichment,
+                                      String userInput, String memorySignals) {
+        StringBuilder sb = new StringBuilder();
+        String memoryBlocks = memory.renderBlocks();
+        if (!memoryBlocks.isBlank()) {
+            sb.append(memoryBlocks);
+        }
+        if (!enrichment.knowledgeContext().isBlank()) {
+            sb.append(enrichment.knowledgeContext());
+        }
+        if (memorySignals != null && !memorySignals.isBlank()) {
+            sb.append(memorySignals).append('\n');
+        }
+        sb.append("【用户问题】\n").append(userInput);
+
+        String enriched = sb.toString();
+        log.info("用户输入已增强: originalLen={}, enrichedLen={}, 会话窗口={}条/{}token, 过滤无效交互={}条",
+                userInput.length(), enriched.length(), memory.windowMessages(),
+                memory.windowTokens(), memory.filteredNoise());
+        return enriched;
+    }
+
+    /**
+     * 生成 + 事实一致性自校验，未通过则带修正指令重新生成。
+     */
+    private AnalysisResult executeWithFactCheck(StockAnalysisInterface agent, String enrichedInput,
+                                                String originalInput, String knowledgeContext) {
         String fixInstructions = "";
         String draft = null;
         for (int round = 1; round <= factCheckMaxRounds; round++) {
@@ -251,7 +285,7 @@ public class StockAgent {
             draft = agent.execute(prompt);
 
             if (!factCheckEnabled) {
-                return draft;
+                return new AnalysisResult(draft, false);
             }
 
             List<String> observations = tracer.getToolObservations().stream()
@@ -261,12 +295,12 @@ public class StockAgent {
                     originalInput, knowledgeContext, observations, draft);
 
             if (report.passed()) {
-                return draft;
+                return new AnalysisResult(draft, true);
             }
             log.warn("事实校验未通过（第{}轮）: {}", round, report.issues());
             fixInstructions = report.fixInstructions();
         }
-        return draft == null ? enrichedInput : draft;
+        return new AnalysisResult(draft == null ? enrichedInput : draft, false);
     }
 
     @SystemMessage(StockAnalysisPrompt.SYSTEM_PROMPT)
@@ -275,16 +309,10 @@ public class StockAgent {
         String execute(String userInput);
     }
 
-    /**
-     * 从用户输入中提取股票代码，构建 LLM 缓存键。
-     * 例如 "分析一下贵州茅台"  →  "llm:analysis:1.600519"
-     */
-    private String buildAnalyzeCacheKey(String userInput) {
-        if (userInput == null || userInput.isBlank()) return null;
-        String code = stockCodeTool.findStockCode(userInput);
-        return code != null ? "llm:analysis:" + code : null;
+    /** 本轮回答 + 是否通过事实一致性校验（用于历史结论层的可信度标记） */
+    private record AnalysisResult(String answer, boolean factChecked) {
     }
 
-    private record EnrichmentResult(String enrichedInput, String knowledgeContext) {
+    private record EnrichmentResult(String knowledgeContext) {
     }
 }

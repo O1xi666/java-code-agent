@@ -10,6 +10,11 @@ agent:
   fact-check:
     enabled: true
     max-rounds: 2
+  memory:
+    # 会话层动态 Token 窗口的预算：超过预算的历史消息按重要性由低到高被裁掉
+    token-budget: 2400
+    # 会话窗口的消息条数安全上限
+    max-records: 30
 
 rag:
   rerank:

@@ -31,7 +31,6 @@ public class MonitoringService {
     // 预警阈值
     private static final double CHANGE_ALERT_PCT = 3.0;       // 涨跌幅预警
     private static final double VOLUME_SPIKE_RATIO = 2.5;      // 成交量放大倍数
-    private static final int CHANGE_SPEED_ALERT = 200;         // 涨速阈值（百分比*100）
 
     private final SeleniumDriver seleniumDriver;
     private final WatchlistRepository watchlistRepository;
@@ -192,10 +191,16 @@ public class MonitoringService {
 
         // 生成预警事件
         if (!currentAlerts.isEmpty()) {
+            String message = String.join("; ", currentAlerts);
+            // 30 分钟内相同股票 + 相同消息视为重复预警，直接跳过
+            if (isDuplicateAlert(secid, message)) {
+                log.debug("重复预警，跳过: {} - {}", name, message);
+                return;
+            }
             AlertInfo alert = new AlertInfo(
                 alertIdSeq.incrementAndGet(),
                 secid, name,
-                String.join("; ", currentAlerts),
+                message,
                 System.currentTimeMillis()
             );
             alerts.add(alert);
@@ -231,10 +236,30 @@ public class MonitoringService {
     // ---- 内部 ----
 
     private boolean isTradingTime(LocalTime t) {
+        // 周末休市
+        java.time.DayOfWeek day = java.time.LocalDate.now().getDayOfWeek();
+        if (day == java.time.DayOfWeek.SATURDAY || day == java.time.DayOfWeek.SUNDAY) {
+            return false;
+        }
         int h = t.getHour(), m = t.getMinute();
         int minute = h * 60 + m;
         // 9:30-11:30 (570-690) 或 13:00-15:00 (780-900)
         return (minute >= 570 && minute <= 690) || (minute >= 780 && minute <= 900);
+    }
+
+    /**
+     * 判断是否存在 30 分钟内、相同股票且相同消息的预警，用于去重
+     */
+    private boolean isDuplicateAlert(String stockCode, String message) {
+        long cutoff = System.currentTimeMillis() - 30 * 60 * 1000L;
+        for (AlertInfo alert : alerts) {
+            if (alert.getTimestamp() >= cutoff
+                    && alert.getStockCode().equals(stockCode)
+                    && alert.getMessage().equals(message)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String normalizeCode(String code) {
