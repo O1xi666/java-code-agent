@@ -5,6 +5,9 @@ import com.knuddels.jtokkit.api.Encoding;
 import com.knuddels.jtokkit.api.EncodingRegistry;
 import com.knuddels.jtokkit.api.IntArrayList;
 import com.knuddels.jtokkit.api.ModelType;
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.text.PDFTextStripper;
 import org.jsoup.parser.Parser;
 
 import java.io.IOException;
@@ -23,7 +26,7 @@ import java.util.zip.ZipFile;
 /**
  * RAG 文档处理工具：
  * <ul>
- *     <li>读取 txt/docx 规范文档</li>
+ *     <li>读取 txt/docx/pdf 规范文档</li>
  *     <li>执行文本清洗</li>
  *     <li>使用 JTokkit 按 token 进行固定窗口分块（512 token，20% overlap）</li>
  * </ul>
@@ -91,7 +94,7 @@ public final class ChunkUtils {
     /**
      * 读取并处理文档，最终输出可直接入向量库的 Chunk 列表。
      *
-     * @param filePath 文档路径，仅支持 .txt/.docx
+     * @param filePath 文档路径，仅支持 .txt/.docx/.pdf
      * @return Chunk 列表（已含 id、来源、token 数）
      * @throws IOException 文件读取失败时抛出
      */
@@ -102,7 +105,7 @@ public final class ChunkUtils {
     }
 
     /**
-     * 支持 txt/docx 文档读取。
+     * 支持 txt/docx/pdf 文档读取。
      */
     public static String readSupportedDocument(Path filePath) throws IOException {
         String filename = filePath.getFileName().toString().toLowerCase(Locale.ROOT);
@@ -112,7 +115,10 @@ public final class ChunkUtils {
         if (filename.endsWith(".docx")) {
             return readDocxText(filePath);
         }
-        throw new IllegalArgumentException("Only .txt/.docx are supported: " + filePath);
+        if (filename.endsWith(".pdf")) {
+            return readPdfText(filePath);
+        }
+        throw new IllegalArgumentException("Only .txt/.docx/.pdf are supported: " + filePath);
     }
 
     /**
@@ -256,6 +262,18 @@ public final class ChunkUtils {
 
             String textWithoutTags = XML_TAGS.matcher(xml).replaceAll("");
             return Parser.unescapeEntities(textWithoutTags, false);
+        }
+    }
+
+    /**
+     * 读取 pdf 文本（字节流可能压缩，交由 PDFBox 解析）。
+     * <p>开启按位置排序，尽量还原双栏研报的阅读顺序。</p>
+     */
+    private static String readPdfText(Path filePath) throws IOException {
+        try (PDDocument document = Loader.loadPDF(filePath.toFile())) {
+            PDFTextStripper stripper = new PDFTextStripper();
+            stripper.setSortByPosition(true);
+            return stripper.getText(document);
         }
     }
 

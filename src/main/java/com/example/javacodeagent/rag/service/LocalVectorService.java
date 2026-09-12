@@ -3,11 +3,16 @@ package com.example.javacodeagent.rag.service;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.store.embedding.EmbeddingMatch;
-import dev.langchain4j.store.embedding.EmbeddingStore;
+import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
+import com.example.javacodeagent.rag.RagPaths;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -47,10 +52,42 @@ public class LocalVectorService {
     public static final String FIELD_TOKEN_COUNT = "token_count";
     public static final int VECTOR_DIMENSION = 768;
 
-    private final EmbeddingStore<TextSegment> embeddingStore;
+    private final InMemoryEmbeddingStore<TextSegment> embeddingStore;
 
-    public LocalVectorService(EmbeddingStore<TextSegment> embeddingStore) {
+    public LocalVectorService(InMemoryEmbeddingStore<TextSegment> embeddingStore) {
         this.embeddingStore = embeddingStore;
+    }
+
+    /**
+     * 从磁盘恢复向量存储（LangChain4j 内置 JSON 序列化）。
+     * <p>读取失败时返回空存储而不是抛异常：索引坏了应该退化成"本次检索无命中"，
+     * 而不是让应用起不来。</p>
+     */
+    public static InMemoryEmbeddingStore<TextSegment> loadPersistedStore() {
+        Path storePath = RagPaths.DOCS_VECTOR_STORE;
+        if (!Files.exists(storePath)) {
+            return new InMemoryEmbeddingStore<>();
+        }
+        try {
+            return InMemoryEmbeddingStore.fromJson(Files.readString(storePath, StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            log.warn("加载向量存储失败，退化为空存储: {} ({})", storePath, e.getMessage());
+            return new InMemoryEmbeddingStore<>();
+        }
+    }
+
+    /**
+     * 把当前向量存储持久化到磁盘，重启后可由 {@link #loadPersistedStore()} 恢复。
+     */
+    public void persistStore() {
+        Path storePath = RagPaths.DOCS_VECTOR_STORE;
+        try {
+            Files.createDirectories(storePath.getParent());
+            Files.writeString(storePath, embeddingStore.serializeToJson(), StandardCharsets.UTF_8);
+            log.info("向量存储已持久化: {}", storePath.toAbsolutePath());
+        } catch (IOException e) {
+            throw new IllegalStateException("向量存储持久化失败: " + storePath, e);
+        }
     }
 
     /**

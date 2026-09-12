@@ -8,13 +8,14 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.Map;
+import java.util.List;
 
 /**
  * 文档管理 REST API
  *
  * 接口设计：
  * POST /api/documents/upload - 上传文档（PDF/DOCX/TXT）
- * GET /api/documents - 获取已上传文档列表
+ * GET /api/documents - 获取已上传文档列表（读 rag-docs/manifest.json）
  * 技术亮点（面试关注点）：
  * 1. 文档上传即解析，上传完成即建立向量 + BM25 双索引，无需手动触发
  * 2. 统一的异常处理，避免前端实现复杂的状态码判断
@@ -54,7 +55,7 @@ public class DocumentController {
                     "fileName", info.originalName(),
                     "fileSize", info.fileSize(),
                     "chunkCount", info.chunkCount(),
-                    "message", "文档上传成功，已自动分块并建立向量索引"
+                    "message", "文档上传成功，已自动分块并建立向量 + BM25 索引"
             ));
         } catch (Exception e) {
             log.error("文档上传失败", e);
@@ -63,6 +64,14 @@ public class DocumentController {
                     "message", "文档上传失败：" + e.getMessage()
             ));
         }
+    }
+
+    /**
+     * 已上传文档列表（持久化在 rag-docs/manifest.json，重启后仍可查）。
+     */
+    @GetMapping
+    public ResponseEntity<List<DocumentService.DocumentInfo>> list() {
+        return ResponseEntity.ok(documentService.listDocuments());
     }
 }
 

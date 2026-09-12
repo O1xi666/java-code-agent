@@ -1,8 +1,13 @@
 package com.example.javacodeagent.service;
 
+import com.example.javacodeagent.rag.RagPaths;
 import com.example.javacodeagent.rag.service.LocalVectorService;
 import com.example.javacodeagent.rag.util.BM25Searcher;
 import com.example.javacodeagent.rag.util.ChunkUtils;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.output.Response;
@@ -12,6 +17,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -26,8 +32,8 @@ import java.util.UUID;
  * 技术亮点（面试关注点）：
  * 1. 支持 PDF/DOCX/TXT 三种文档格式，覆盖常见研报类型
  * 2. 上传后自动分块（512 token，20% overlap）并建立向量 + BM25 双索引
- * 3. 向量存储持久化（toJson），启动时可自动恢复
- * 4. 文档清单持久化到 JSON 文件，支持查看和管理
+ * 3. 向量存储持久化（toJson），启动时由 RagConfig 自动恢复
+ * 4. 文档清单持久化到 rag-docs/manifest.json，支持列表查看
  *
  * 文档处理流程：
  * 上传 → 保存原始文件 → 解析文本 → 分块 → 向量化 → 存入向量库 → 存入 BM25 → 持久化
@@ -37,12 +43,15 @@ public class DocumentService {
 
     private static final Logger log = LoggerFactory.getLogger(DocumentService.class);
 
-    private static final String DOCS_DIR = "rag-docs";
-    private static final String MANIFEST_FILE = "rag-docs/manifest.json";
+    /** 上传文档根目录：与 RAG 检索侧共用同一份路径定义（{@link RagPaths}）。 */
+    public static final String DOCS_DIR = RagPaths.DOCS_DIR;
+
+    private static final Path MANIFEST_FILE = RagPaths.DOCS_MANIFEST;
 
     private final EmbeddingModel embeddingModel;
     private final LocalVectorService localVectorService;
     private final BM25Searcher bm25Searcher;
+    private final ObjectMapper objectMapper;
 
     public DocumentService(
             EmbeddingModel embeddingModel,
@@ -52,6 +61,9 @@ public class DocumentService {
         this.embeddingModel = embeddingModel;
         this.localVectorService = localVectorService;
         this.bm25Searcher = bm25Searcher;
+        this.objectMapper = new ObjectMapper()
+                .registerModule(new JavaTimeModule())
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     }
 
     /**
@@ -83,8 +95,12 @@ public class DocumentService {
         String text = ChunkUtils.readSupportedDocument(storedPath);
         String cleanedText = ChunkUtils.cleanText(text);
 
-        // 4. 分块（512 token，20% overlap）
-        List<ChunkUtils.Chunk> chunks = ChunkUtils.chunkByToken(cleanedText, originalName, 400, 0.20);
+        // 4. 分块（沿用 ChunkUtils 默认的 512 token / 20% overlap）
+        List<ChunkUtils.Chunk> chunks = ChunkUtils.chunkByToken(cleanedText, originalName);
+        if (chunks.isEmpty()) {
+            Files.deleteIfExists(storedPath);
+            throw new IllegalArgumentException("文档未解析出有效文本（可能是扫描版 PDF 或空文件）: " + originalName);
+        }
 
         // 5. 向量化并存入向量库 + BM25
         List<LocalVectorService.VectorRecord> vectorRecords = new ArrayList<>();
@@ -106,20 +122,21 @@ public class DocumentService {
         // 批量插入向量库
         localVectorService.insertBatch(vectorRecords);
 
-        // 追加写入 BM25 索引（CreateOrReplace 刷新整个索引）
-        bm25Searcher.createOrReplaceIndex(bm25Chunks);
+        // 增量追加 BM25 索引：多文档共存，后上传的文档不会覆盖已有文档
+        bm25Searcher.appendChunks(bm25Chunks);
 
         log.info("文档索引完成: {} → {} 个 chunk", originalName, chunks.size());
 
         // 6. 保存文档清单
+        String normalizedSource = source == null ? "" : source;
         DocumentInfo info = new DocumentInfo(
                 docId, originalName, file.getSize(), ext,
-                Instant.now(), chunks.size(), storedPath.toString()
+                Instant.now(), chunks.size(), storedPath.toString(), normalizedSource
         );
         saveDocumentInfo(info);
 
-        // 7. 持久化向量存储（可选，需在 LocalVectorService 端实现）
-        // localVectorService.persistStore();
+        // 7. 持久化向量存储，重启后由 RagConfig 自动恢复
+        localVectorService.persistStore();
 
         return info;
     }
@@ -128,25 +145,32 @@ public class DocumentService {
      * 获取所有已上传的文档列表
      */
     public List<DocumentInfo> listDocuments() {
-        // 从 manifest 文件读取
-        Path manifest = Path.of(MANIFEST_FILE);
-        if (!Files.exists(manifest)) {
+        if (!Files.exists(MANIFEST_FILE)) {
             return List.of();
         }
         try {
-            String json = Files.readString(manifest);
-            // 简单 JSON 解析
-            return List.of(); // TODO: 实现 JSON 反序列化
-        } catch (IOException e) {
-            log.warn("读取文档清单失败", e);
+            String json = Files.readString(MANIFEST_FILE, StandardCharsets.UTF_8);
+            List<DocumentInfo> loaded = objectMapper.readValue(json, new TypeReference<List<DocumentInfo>>() {});
+            return loaded == null ? List.of() : loaded;
+        } catch (Exception e) {
+            log.warn("读取文档清单失败: {}", e.getMessage());
             return List.of();
         }
     }
 
+    /**
+     * 把文档信息追加写入 manifest.json（读-改-写，条目量级很小，全量重写即可）。
+     */
     private void saveDocumentInfo(DocumentInfo info) {
-        // TODO: 将文档信息追加到 manifest.json
-        // 简化实现：暂不做持久化
-        log.info("文档已上传: {}", info);
+        List<DocumentInfo> all = new ArrayList<>(listDocuments());
+        all.add(info);
+        try {
+            Files.createDirectories(MANIFEST_FILE.getParent());
+            objectMapper.writerWithDefaultPrettyPrinter().writeValue(MANIFEST_FILE.toFile(), all);
+            log.info("文档清单已更新: {} 条", all.size());
+        } catch (IOException e) {
+            throw new IllegalStateException("文档清单写入失败: " + MANIFEST_FILE, e);
+        }
     }
 
     private String getExtension(String filename) {
@@ -164,6 +188,7 @@ public class DocumentService {
             String contentType,
             Instant uploadTime,
             int chunkCount,
-            String storedPath
+            String storedPath,
+            String source
     ) {}
 }

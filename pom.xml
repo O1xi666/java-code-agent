@@ -12,7 +12,7 @@
     <artifactId>java-code-agent</artifactId>
     <version>0.0.1-SNAPSHOT</version>
     <name>java-code-agent</name>
-    <description>Java浠ｇ爜鏅鸿兘Agent锛圧AG澧炲己鐗堬級</description>
+    <description>金融股票智能分析 Agent：LangChain4j Function Calling + 三级记忆 + RAG 混合检索</description>
 
     <properties>
         <java.version>21</java.version>
@@ -20,24 +20,25 @@
     </properties>
 
     <dependencies>
-        <!-- 1. Spring Boot 鍩虹锛堝繀椤伙級 -->
+        <!-- 1. Spring Boot Web（REST API + SSE） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
+        <!-- 流式分析使用 Reactor Flux -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>
 
-        <!-- 2. LangChain4j 鏍稿績锛堝繀椤伙級 -->
+        <!-- 2. LangChain4j：AiServices + @Tool Function Calling + ContentRetriever -->
         <dependency>
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j</artifactId>
             <version>${langchain4j.version}</version>
         </dependency>
 
-        <!-- 鉁?3. Ollama 渚濊禆锛堜綘鐪熸闇€瑕佺殑锛佷慨澶峈agConfig鎶ョ孩锛?-->
+        <!-- 3. Ollama：本地推理（qwen3:8b）与嵌入（bge-base-zh-v1.5） -->
         <dependency>
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j-ollama</artifactId>
@@ -50,19 +51,20 @@
             <version>${langchain4j.version}</version>
         </dependency>
 
-        <!-- 4. 娴嬭瘯渚濊禆锛堝繀椤伙級 -->
+        <!-- 4. 测试：JUnit 5 + Mockito -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
-        <!-- 鉁?5. Redis 渚濊禆锛堢敤浜庢寔涔呭寲浼氳瘽璁板繂锛?-->
+
+        <!-- 5. Redis：会话记忆与热点数据 L2 缓存 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
-        <!-- cache: Caffeine L1 + Redis L2 -->
+        <!-- 6. Caffeine L1 缓存 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-cache</artifactId>
@@ -71,20 +73,20 @@
             <groupId>com.github.ben-manes.caffeine</groupId>
             <artifactId>caffeine</artifactId>
         </dependency>
-
-        <!-- 鉁?6. Lettuce 杩炴帴姹犳敮鎸侊紙Redis 瀹㈡埛绔級 -->
+        <!-- Lettuce 连接池 -->
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-pool2</artifactId>
         </dependency>
 
+        <!-- 7. JTokkit：按真实 token 计量上下文预算 -->
         <dependency>
             <groupId>com.knuddels</groupId>
             <artifactId>jtokkit</artifactId>
             <version>1.1.0</version>
         </dependency>
 
-        <!-- 9. BM25 妫€绱紙Lucene锛?-->
+        <!-- 8. Lucene BM25（SmartChineseAnalyzer 中文分词） -->
         <dependency>
             <groupId>org.apache.lucene</groupId>
             <artifactId>lucene-core</artifactId>
@@ -96,32 +98,19 @@
             <version>9.8.0</version>
         </dependency>
 
-        <!-- 10. 鏂囨。瑙ｆ瀽涓庢竻娲?-->
-        <dependency>
-            <groupId>org.apache.poi</groupId>
-            <artifactId>poi</artifactId>
-            <version>5.2.5</version>
-        </dependency>
+        <!-- 9. 解析：HTML 清洗 / 研报 PDF 抽取 -->
         <dependency>
             <groupId>org.jsoup</groupId>
             <artifactId>jsoup</artifactId>
             <version>1.17.2</version>
         </dependency>
-        <!-- JavaParser 浠ｇ爜瑙ｆ瀽鏍稿績渚濊禆锛堣В鍐冲綋鍓嶇紪璇戞姤閿欙級 -->
-        <dependency>
-            <groupId>com.github.javaparser</groupId>
-            <artifactId>javaparser-core</artifactId>
-            <version>3.25.8</version>
-        </dependency>
-
-
-            <!-- 12. PDF 文档解析 -->
         <dependency>
             <groupId>org.apache.pdfbox</groupId>
             <artifactId>pdfbox</artifactId>
-           <version>3.0.1</version>
-       </dependency>
-                <!-- 11.5 JPA + MySQL -->
+            <version>3.0.1</version>
+        </dependency>
+
+        <!-- 10. 持久化：自选股 MySQL + JPA -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
@@ -131,7 +120,8 @@
             <artifactId>mysql-connector-j</artifactId>
             <scope>runtime</scope>
         </dependency>
-        <!-- 13. Selenium 浏览器自动化 -->
+
+        <!-- 11. Selenium 浏览器自动化：财务数据与资讯抓取 -->
         <dependency>
             <groupId>org.seleniumhq.selenium</groupId>
             <artifactId>selenium-java</artifactId>
@@ -142,7 +132,6 @@
             <artifactId>webdrivermanager</artifactId>
             <version>5.9.2</version>
         </dependency>
-
     </dependencies>
 
     <build>
@@ -168,4 +157,3 @@
         </plugins>
     </build>
 </project>
-

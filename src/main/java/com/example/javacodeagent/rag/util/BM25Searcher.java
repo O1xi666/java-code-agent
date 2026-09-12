@@ -81,6 +81,20 @@ public class BM25Searcher {
      * @param chunks 待索引的 chunk 数据
      */
     public void createOrReplaceIndex(List<Bm25Chunk> chunks) {
+        writeChunks(chunks, IndexWriterConfig.OpenMode.CREATE);
+    }
+
+    /**
+     * 增量追加 chunk 到现有索引（不存在时自动创建）。
+     * <p>多文档场景必须用追加而不是重建，否则后上传的文档会把先前文档的索引覆盖掉。</p>
+     *
+     * @param chunks 待追加的 chunk 数据
+     */
+    public void appendChunks(List<Bm25Chunk> chunks) {
+        writeChunks(chunks, IndexWriterConfig.OpenMode.CREATE_OR_APPEND);
+    }
+
+    private void writeChunks(List<Bm25Chunk> chunks, IndexWriterConfig.OpenMode openMode) {
         if (chunks == null) {
             throw new IllegalArgumentException("chunks must not be null");
         }
@@ -92,7 +106,7 @@ public class BM25Searcher {
         }
 
         IndexWriterConfig config = new IndexWriterConfig(analyzer);
-        config.setOpenMode(IndexWriterConfig.OpenMode.CREATE);
+        config.setOpenMode(openMode);
         config.setSimilarity(new BM25Similarity());
 
         try (Directory directory = FSDirectory.open(indexPath);

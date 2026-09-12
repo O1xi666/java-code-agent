@@ -2,6 +2,14 @@ server:
   port: 8080
 
 agent:
+  # 本地 Ollama 服务与模型；换模型只改这里，不用改代码
+  llm:
+    base-url: http://localhost:11434
+    model: qwen3:8b
+  embedding:
+    base-url: http://localhost:11434
+    # bge-base-zh-v1.5：768 维中文嵌入，与 LocalVectorService#VECTOR_DIMENSION 对应
+    model: quentinz/bge-base-zh-v1.5:latest
   tool:
     max-rounds: 8
     max-retries: 2
@@ -23,6 +31,8 @@ rag:
     timeout-seconds: 30
 
 spring:
+  application:
+    name: java-code-agent
   data:
     redis:
       host: localhost
@@ -31,8 +41,10 @@ spring:
       timeout: 10s
   datasource:
     url: jdbc:mysql://127.0.0.1:3306/stock-analysis-local?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&createDatabaseIfNotExist=true
-    username: root
-    password: 23009201435
+    # 凭据不入库：本地运行时用环境变量注入，例如
+    #   PowerShell:  $env:MYSQL_USERNAME='root'; $env:MYSQL_PASSWORD='你的密码'
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:}
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
       maximum-pool-size: 10

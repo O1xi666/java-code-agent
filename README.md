@@ -35,7 +35,7 @@
 | **思维链 + 事实自校验** | Prompt 固化「明确问题→拆解维度→调用工具→推导结论→交叉校验」五步路径；回答生成后再从数据准确性 / 标的匹配度 / 逻辑一致性三个维度自动核查，不通过则触发重生成 |
 | **双源降级 + 多级缓存** | 行情走新浪、降级东方财富；财务走 Selenium、降级东方财富 API；资讯走新浪财经、降级东方财富。Caffeine L1 + Redis L2 二级缓存，按数据类型区分 TTL |
 | **全链路步骤级埋点** | 每次分析产生 traceId，按阶段输出 JSON Lines 日志，可完整还原「用户输入 → 工具调用 → 工具结果 → 最终输出 → 汇总」 |
-| **RAG 知识库** | 向量检索（Ollama 嵌入）+ BM25（Lucene smartcn）并行混合检索，权重 7:3，可选 Rerank 精排；投研知识按标的与类别检索并带引用编号 |
+| **RAG 知识库** | 两套互不干扰的检索数据：① 投研知识库（结构化条目 + 通用规则）向量 + BM25 并行混合检索，权重 7:3，可选 Rerank 精排，按标的过滤并带引用编号后以【参考知识】注入 Prompt；② 上传研报文档库走 LangChain4j `ContentRetriever` 自动召回 |
 | **异动监控** | 每 30 分钟轮询自选股，涨跌幅 / 量能 / MACD / RSI / 布林带五类规则触发预警，SSE 实时推送到前端面板 |
 
 ---
@@ -70,6 +70,9 @@ config/         模型 / 向量库 / BM25 / Redis / 缓存策略 / 工具调用�
 util/           多级缓存管理器、HTTP 客户端、Selenium 单例
 vo/ model/ repository/   数据模型与持久化
 ```
+
+运行时数据目录（均不入库）：`rag-knowledge/` 是随代码分发的投研知识种子数据（清单 + 向量 + BM25），
+`rag-docs/` 是用户上传研报的落盘位置（原始文件 + 向量 + BM25 + 清单），路径统一由 `rag/RagPaths` 定义。
 
 ---
 
@@ -202,6 +205,17 @@ INPUT → TOOL_CALL → TOOL_RESULT / TOOL_ERROR → OUTPUT → SUMMARY
 | `/api/knowledge/general-rule` | POST / GET / DELETE | 通用规则（每次分析自动附加） |
 | `/api/knowledge/stats` · `/stocks` · `/clear` · `/rebuild` | GET / DELETE / POST | 统计、覆盖标的、清空、重建索引 |
 
+### 文档库（上传研报）
+
+| 接口 | 方法 | 说明 |
+|---|---|---|
+| `/api/documents/upload` | POST | 上传 PDF / DOCX / TXT，自动分块（512 token / 20% overlap）并建向量 + BM25 双索引 |
+| `/api/documents` | GET | 已上传文档列表（读 `rag-docs/manifest.json`，重启后仍可查） |
+
+与投研知识库的区别：知识库是**人工沉淀的结构化条目**（绑定股票代码与类别，按标的过滤后显式注入 Prompt）；
+文档库是**用户上传的原始研报**，走 LangChain4j `ContentRetriever` 在每轮对话前自动召回。
+两者索引目录、写入方、召回方式都相互独立。
+
 ### 异动监控
 
 | 接口 | 方法 | 说明 |
@@ -224,7 +238,7 @@ INPUT → TOOL_CALL → TOOL_RESULT / TOOL_ERROR → OUTPUT → SUMMARY
 ### 前置条件
 
 - JDK 21+、Maven 3.8+
-- MySQL 8+（自选股持久化，`application.yml` 中配置；`createDatabaseIfNotExist=true` 会自动建库）
+- MySQL 8+（自选股持久化；`createDatabaseIfNotExist=true` 会自动建库）
 - Redis（会话记忆、画像、历史结论、L2 缓存；不可用时记忆层自动降级为进程内存储）
 - Ollama 与本地模型：
 
@@ -233,10 +247,17 @@ ollama pull qwen3:8b
 ollama pull quentinz/bge-base-zh-v1.5:latest
 ```
 
-- Edge 浏览器（Selenium 抓取财务/资讯用）。驱动无需手动放置：优先使用项目根目录的
-  `msedgedriver.exe`，找不到时由 WebDriverManager 自动下载匹配版本。
+- Edge 浏览器（Selenium 抓取财务/资讯用）。驱动不随仓库分发（避免 40MB 二进制入版本库），
+  首次运行由 WebDriverManager 自动下载匹配版本。
 
 ### 启动
+
+数据库凭据不写入仓库，用环境变量注入（`application.yml` 中是 `${MYSQL_USERNAME:root}` / `${MYSQL_PASSWORD:}`）：
+
+```powershell
+$env:MYSQL_USERNAME = "root"
+$env:MYSQL_PASSWORD = "你的本地密码"
+```
 
 ```bash
 cd java-code-agent
@@ -262,8 +283,10 @@ curl -X POST http://localhost:8080/api/stock/analyze \
 mvn test
 ```
 
-覆盖三级记忆（打分 / Token 窗口 / 画像冲突 / 结论准入与失效）、技术指标算法、
-行情降级解析、缓存命中与 TTL、SimHash 去重、控制器接口等，无需外部依赖即可运行。
+当前 62 个用例，覆盖三级记忆（打分 / Token 窗口 / 画像冲突 / 结论准入与失效）、技术指标算法、
+行情降级解析、缓存命中与 TTL、SimHash 去重、文档解析与分块（txt / docx / pdf）、
+BM25 多文档共存、向量持久化与重启恢复、控制器接口等。
+全部为单元 / 集成测试，不触网、不依赖 Ollama（嵌入模型用 mock 替换）即可运行。
 
 ### 复现两个量化指标
 
@@ -289,6 +312,8 @@ curl -X POST "http://localhost:8080/api/diagnostics/cache/benchmark?secid=1.6005
 - 监控预警保存在内存中，重启后丢失；去重窗口为 30 分钟。
 - 用户标识当前直接复用会话 ID（`X-Session-Id`），接入登录体系后应替换为真实用户 ID。
 - 项目为本地运行的演示/学习用途，未做鉴权、限流与多实例部署。
+- 上传研报库的语义召回依赖 Ollama 嵌入服务；该链路的异常会被捕获并跳过，仅损失文档召回、不影响主分析流程。
+- 仓库不含任何真实凭据：MySQL 账号密码经 `MYSQL_USERNAME` / `MYSQL_PASSWORD` 环境变量注入。
 
 ## License
 
