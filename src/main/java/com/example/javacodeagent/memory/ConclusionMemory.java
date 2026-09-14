@@ -1,13 +1,15 @@
 package com.example.javacodeagent.memory;
 
-import com.fasterxml.jackson.core.type.TypeReference;
+import com.example.javacodeagent.model.MemoryCard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -46,8 +48,6 @@ public class ConclusionMemory {
     private static final Duration TTL_PRICE_SENSITIVE = Duration.ofHours(24);
     /** 纯基本面结论变化慢，7 天有效 */
     private static final Duration TTL_DEFAULT = Duration.ofDays(7);
-    private static final Duration ACTIVE_TTL = Duration.ofDays(30);
-    private static final Duration ARCHIVE_TTL = Duration.ofDays(180);
 
     private static final int MAX_ACTIVE = 20;
     private static final int MAX_ARCHIVE = 100;
@@ -138,9 +138,9 @@ public class ConclusionMemory {
         }
     }
 
-    private final MemoryStore store;
+    private final MemoryCardStore store;
 
-    public ConclusionMemory(MemoryStore store) {
+    public ConclusionMemory(MemoryCardStore store) {
         this.store = store;
     }
 
@@ -316,22 +316,74 @@ public class ConclusionMemory {
     }
 
     private List<Conclusion> loadActive(String userId) {
-        List<Conclusion> list = MemoryJsonUtil.read(store.get(activeKey(userId)),
-                new TypeReference<ArrayList<Conclusion>>() {
-                });
-        return list == null ? new ArrayList<>() : list;
+        return new ArrayList<>(store.findByStatus(safeUser(userId), Status.ACTIVE.name())
+                .stream().map(ConclusionMemory::toConclusion).toList());
     }
 
     private List<Conclusion> loadArchive(String userId) {
-        List<Conclusion> list = MemoryJsonUtil.read(store.get(archiveKey(userId)),
-                new TypeReference<ArrayList<Conclusion>>() {
-                });
-        return list == null ? new ArrayList<>() : list;
+        return new ArrayList<>(store.findNotStatus(safeUser(userId), Status.ACTIVE.name())
+                .stream().map(ConclusionMemory::toConclusion).toList());
     }
 
+    /**
+     * 把 active + archive 两个列表同步到 memory_card 表:不在列表里的行删除,其余插入或更新。
+     *
+     * <p>这样表的最终状态完全由这两个列表决定,被 trim 掉的卡片会自动从表里消失,
+     * 不需要在裁剪逻辑里额外调用删除。
+     */
     private void persist(String userId, List<Conclusion> active, List<Conclusion> archive) {
-        store.put(activeKey(userId), MemoryJsonUtil.write(active), ACTIVE_TTL);
-        store.put(archiveKey(userId), MemoryJsonUtil.write(archive), ARCHIVE_TTL);
+        String owner = safeUser(userId);
+        Map<String, MemoryCard> keep = new LinkedHashMap<>();
+        for (Conclusion conclusion : active) {
+            keep.put(conclusion.getId(), toCard(owner, conclusion));
+        }
+        for (Conclusion conclusion : archive) {
+            keep.put(conclusion.getId(), toCard(owner, conclusion));
+        }
+        List<MemoryCard> obsolete = store.findAll(owner).stream()
+                .filter(card -> !keep.containsKey(card.getId()))
+                .toList();
+        if (!obsolete.isEmpty()) {
+            store.deleteAll(obsolete);
+        }
+        store.saveAll(new ArrayList<>(keep.values()));
+    }
+
+    private static MemoryCard toCard(String userId, Conclusion conclusion) {
+        MemoryCard card = new MemoryCard();
+        card.setId(conclusion.getId());
+        card.setUserId(userId);
+        card.setStockCode(conclusion.getStockCode());
+        card.setStockName(conclusion.getStockName());
+        card.setQuestion(conclusion.getQuestion());
+        card.setSummary(conclusion.getSummary());
+        card.setScore(conclusion.getScore());
+        card.setDirection(conclusion.getDirection());
+        card.setConfidence(conclusion.getConfidence());
+        card.setFactChecked(conclusion.isFactChecked());
+        card.setStatus(conclusion.getStatus().name());
+        card.setInvalidReason(conclusion.getInvalidReason());
+        card.setCreatedAt(conclusion.getCreatedAt());
+        card.setExpiresAt(conclusion.getExpiresAt());
+        return card;
+    }
+
+    private static Conclusion toConclusion(MemoryCard card) {
+        Conclusion conclusion = new Conclusion();
+        conclusion.setId(card.getId());
+        conclusion.setStockCode(card.getStockCode());
+        conclusion.setStockName(card.getStockName());
+        conclusion.setQuestion(card.getQuestion());
+        conclusion.setSummary(card.getSummary());
+        conclusion.setScore(card.getScore());
+        conclusion.setDirection(card.getDirection());
+        conclusion.setConfidence(card.getConfidence());
+        conclusion.setFactChecked(card.isFactChecked());
+        conclusion.setStatus(Status.valueOf(card.getStatus()));
+        conclusion.setInvalidReason(card.getInvalidReason());
+        conclusion.setCreatedAt(card.getCreatedAt());
+        conclusion.setExpiresAt(card.getExpiresAt());
+        return conclusion;
     }
 
     private static String buildSummary(String answer) {
@@ -356,14 +408,6 @@ public class ConclusionMemory {
     private static String formatTime(long epochMillis) {
         return java.time.LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(epochMillis),
                 java.time.ZoneId.systemDefault()).toLocalDate().toString();
-    }
-
-    private static String activeKey(String userId) {
-        return "memory:conclusion:active:" + safeUser(userId);
-    }
-
-    private static String archiveKey(String userId) {
-        return "memory:conclusion:archive:" + safeUser(userId);
     }
 
     private static String safeUser(String userId) {

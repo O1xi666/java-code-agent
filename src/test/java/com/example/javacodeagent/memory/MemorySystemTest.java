@@ -144,7 +144,7 @@ class MemorySystemTest {
         MemoryStore store = new MemoryStore(null);
         UserProfileMemory profile = new UserProfileMemory(store);
         AgentMemoryService service = new AgentMemoryService(new SessionMemory(store), profile,
-                new ConclusionMemory(store), 2400, 30);
+                new ConclusionMemory(new InMemoryMemoryCardStore()), 2400, 30);
 
         assertNull(service.handleUserSignals("u1", "分析一下贵州茅台"),
                 "普通个股问题不应被误判成偏好");
@@ -161,7 +161,7 @@ class MemorySystemTest {
         MemoryStore store = new MemoryStore(null);
         UserProfileMemory profile = new UserProfileMemory(store);
         AgentMemoryService service = new AgentMemoryService(new SessionMemory(store), profile,
-                new ConclusionMemory(store), 2400, 30);
+                new ConclusionMemory(new InMemoryMemoryCardStore()), 2400, 30);
 
         service.handleUserSignals("u1", "我偏好稳健");
         String conflictNote = service.handleUserSignals("u1", "我偏好激进");
@@ -180,7 +180,7 @@ class MemorySystemTest {
         MemoryStore store = new MemoryStore(null);
         SessionMemory session = new SessionMemory(store);
         AgentMemoryService service = new AgentMemoryService(session, new UserProfileMemory(store),
-                new ConclusionMemory(store), 2400, 30);
+                new ConclusionMemory(new InMemoryMemoryCardStore()), 2400, 30);
 
         session.record("s1", "user", "分析贵州茅台");
         session.record("s1", "tool", TOOL_ERROR_JSON);
@@ -196,7 +196,7 @@ class MemorySystemTest {
 
     @Test
     void conclusionAdmissionGatesLowQualityAnswers() {
-        ConclusionMemory memory = new ConclusionMemory(new MemoryStore(null));
+        ConclusionMemory memory = new ConclusionMemory(new InMemoryMemoryCardStore());
 
         assertFalse(memory.evaluateAdmission("太短了", true, 3).admitted(), "过短回答不得沉淀");
         assertFalse(memory.evaluateAdmission("这是一段足够长的回答，用来验证缺少四维评分时会被准入规则拒绝，"
@@ -209,7 +209,7 @@ class MemorySystemTest {
 
     @Test
     void conclusionSupersedeMarksOldAsStaleAndArchives() {
-        ConclusionMemory memory = new ConclusionMemory(new MemoryStore(null));
+        ConclusionMemory memory = new ConclusionMemory(new InMemoryMemoryCardStore());
 
         ConclusionMemory.Conclusion first =
                 memory.write("u1", "1.600519", "贵州茅台", "分析茅台", VALID_ANSWER, true, 3);
@@ -235,7 +235,7 @@ class MemorySystemTest {
 
     @Test
     void conclusionIsNeverLeakedAcrossDifferentTargets() {
-        ConclusionMemory memory = new ConclusionMemory(new MemoryStore(null));
+        ConclusionMemory memory = new ConclusionMemory(new InMemoryMemoryCardStore());
         memory.write("u1", "0.300750", "宁德时代", "分析宁德时代", VALID_ANSWER, true, 3);
 
         assertTrue(memory.render("u1", "1.600519").isEmpty(),
@@ -245,7 +245,7 @@ class MemorySystemTest {
 
     @Test
     void rejectedConclusionIsNotPersisted() {
-        ConclusionMemory memory = new ConclusionMemory(new MemoryStore(null));
+        ConclusionMemory memory = new ConclusionMemory(new InMemoryMemoryCardStore());
         assertNull(memory.write("u1", "1.600519", "贵州茅台", "问一句", "闲聊内容", true, 0));
         assertEquals(0, memory.activeCount("u1"));
     }
